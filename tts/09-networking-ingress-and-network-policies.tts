@@ -1,0 +1,187 @@
+Networking, ingress, and network policies.
+
+What is covered. This notebook walks through the kubernetes networking model — the four hard requirements every cluster has to satisfy, and why "pods get real eye-pees" is a big deal. Pod eye-pees and pod see-eye-dee-ares — where the addresses come from, how each node gets a sub-range. What a see-en-eye plugin actually does — the second-by-second story of a pod getting on the network. The three communication paths — pod-to-pod, pod-to-service, and pod-to-external — and how the kernel routes each. Ingress — why a per-service load balancer does not scale, and what an ingress resource gives you that services cannot. Ingress controllers — n-ginx ingress, traefik, h-ay proxy, cloud load balancer controllers. The thing that actually does the work. The ingress resource anatomy — hosts, paths, tee-el-ess, ingress class, the path type field. The gateway ay-pee-eye — the newer, more expressive replacement for ingress. Network policy — kubernetes' firewall, by labels and namespaces and see-eye-dee-ares, with ingress and egress rules. Network policy semantics — the additive-allow model, default-deny patterns, the see-en-eye dependency. And a core-d-en-ess revisit — customising the cluster's dee-en-ess server.
+
+By the end of this notebook you should be able to expose an h-t-t-p service publicly through an ingress, write a network policy that locks down a namespace to only the traffic it needs, and explain why your network policy did not do anything — probably, because your see-en-eye does not enforce them. Notebooks four and eight are the prerequisites. Services give you the layer-four primitive. See-en-eye and kube proxy are what this notebook is asking the see-en-eye to actually implement.
+
+The kubernetes networking model — four hard requirements.
+
+The kubernetes networking spec is a small set of axioms. Every cluster — your laptop's kind, a managed elastic kubernetes service cluster, a two-thousand-node bare-metal install — must satisfy all four.
+
+First, every pod gets its own routable eye-pee. Not a n-ay-tee port mapping, not a shared address — a real eye-pee that other pods on any node can dial directly. The pod sees that eye-pee from inside — for example, with hostname dash eye, or ip addr.
+
+Second, pods can talk to all other pods without n-ay-tee. Whether the other pod is on the same node or a different node, the source eye-pee is preserved end-to-end. From pod a's perspective, talking to pod b is identical regardless of where b is running.
+
+Third, nodes can talk to all pods, without n-ay-tee. This is what lets the kube-let's probes work, and what lets kubectl exec and kubectl port forward proxy through the ay-pee-eye server to a pod.
+
+Fourth, the eye-pee a pod sees for itself is the eye-pee others see it as. No internal versus external address inside a pod. The simplicity of this is easy to under-appreciate. Docker's default networking violates it, and that is why running plain docker at scale gets painful.
+
+Together, these are sometimes called the flat, or eye-pee-per-pod, model. Compared to the docker-style "containers share the host eye-pee, expose via n-ay-tee" world, it is easier to reason about — every connection is just eye-pee to eye-pee. Easier for service meshes and observability — sidecar proxies sit on a real network interface, not behind a n-ay-tee. And harder to implement — the cluster operator has to ensure routing works between every node's pod range and every other node's pod range. That is the see-en-eye's job, from notebook eight.
+
+What kubernetes does not mandate. It does not say how you achieve the four properties. Overlay tunnels, b-gee-pee routing on flat layer two, cloud v-p-c routes, native e-b-p-f — all valid. It does not say anything about security. By default, every pod can reach every other pod in the cluster, in any namespace. Network policy, later in this notebook, is how you change that. And it does not say anything about bandwidth or quality of service. Some see-en-eyes offer it, none guarantee it.
+
+Pod eye-pees and pod see-eye-dee-ares.
+
+A typical kube-ay-dee-m cluster has two address ranges separate from your v-p-c, or l-ay-n. The pod see-eye-dee-are — the range pods get eye-pees from. Default is one-ninety-two dot one-sixty-eight dot zero dot zero, slash sixteen, if you kube-ay-dee-m init with that as the pod network see-eye-dee-are. Often ten dot two-forty-four dot zero dot zero slash sixteen on flannel, or ten dot forty-two dot zero dot zero slash sixteen on calico. And the service see-eye-dee-are — the range service cluster eye-pees come from. Default ten dot ninety-six dot zero dot zero slash twelve. You met this in notebook four.
+
+The pod see-eye-dee-are is subdivided per node. Each node gets a slice — typically slash twenty-four, two hundred and fifty-six eye-pees — that it allocates from for the pods it runs. Kubectl get nodes dash o wide shows it. Kubectl get node, followed by a name and a j-son path expression for spec dot pod see-eye-dee-are, shows the slice directly.
+
+Picture this. The cluster pod see-eye-dee-are is one-ninety-two dot one-sixty-eight dot zero dot zero slash sixteen. Node one gets one-ninety-two dot one-sixty-eight dot one dot zero slash twenty-four. Node two gets one-ninety-two dot one-sixty-eight dot two dot zero slash twenty-four. Pods on node one have addresses like one-ninety-two dot one-sixty-eight dot one dot five. Pods on node two have one-ninety-two dot one-sixty-eight dot two dot four.
+
+That layout lets the cluster route by node — any packet destined for one-ninety-two dot one-sixty-eight dot two dot zero slash twenty-four goes to node two. The see-en-eye's job is to publish those per-node routes — via b-gee-pee, overlay tunnel headers, or whatever mechanism it picked.
+
+Two clusters, same see-eye-dee-are — the everyday problem. One-ninety-two dot one-sixty-eight overlaps with what corporate l-ay-ns and home routers use. If your laptop's kind cluster picks the same range as your v-p-n, traffic to one-ninety-two dot one-sixty-eight dot anything from the host will not know whether it means the cluster or the office. That is why production clusters pick non-overlapping ranges, and tools like calico let you allocate eye-pees from a non-default range.
+
+What a see-en-eye plugin actually does — second-by-second.
+
+When the kube-let creates a pod, here is what happens on the networking side.
+
+One, the kube-let creates the pod's network namespace. The container runtime does the system-call work. The kube-let asks for it via see-are-eye. The pod now has its own kernel net namespace with no interfaces in it except a loopback.
+
+Two, the kube-let invokes the configured see-en-eye plugin by running its binary. Inputs come via standard input as j-son and env vars — the pod's namespace, the container i-d, the see-en-eye config from slash e-t-c slash c-n-i slash net dot dee.
+
+Three, the see-en-eye plugin allocates an eye-pee from the node's slice of the pod see-eye-dee-are. Managed by an eye-p-ay-m plugin — usually host local, or calico eye-p-ay-m.
+
+Four, the see-en-eye plugin creates a virtual interface pair — a v-e-t-h pair. One end goes into the pod's network namespace, named e-t-h zero. The other stays on the host.
+
+Five, the see-en-eye plugin programs routes — on the host side, on the pod side, and potentially in the cluster's overlay or b-gee-pee fabric. The pod can now ping one dot one dot one dot one, subject to n-ay-tee for egress.
+
+Six, the see-en-eye plugin returns the assigned eye-pee to the kube-let. The kube-let puts this in the pod's status dot pod eye-pee.
+
+Seven, kube proxy notices the pod is ready, later, after probes pass, and updates service endpoints. Cluster dee-en-ess starts returning this pod's eye-pee for any selector that matches.
+
+Eight, the pod's containers start. They see e-t-h zero already configured with their pod eye-pee.
+
+Steps one through six take milliseconds. Whatever your see-en-eye does — v-x-l-a-n encapsulation, b-gee-pee route advertisement, cloud v-p-c route addition, e-b-p-f socket attachment — it has to do it fast.
+
+Inspecting it. Kubectl get pod dash o wide shows the eye-pee. Kubectl exec into the pod and run ip addr to see the network namespace's view. On the node itself, ip link shows the host end of every v-e-t-h pair, named v-e-t-h followed by some characters, or calico if the see-en-eye is calico.
+
+The three communication paths.
+
+Once the cluster is networked, every connection a pod makes falls into one of three categories. Each is routed differently in the kernel.
+
+First, pod-to-pod, same or different node. The simplest case. Pod a wants to reach pod b by eye-pee. The packet leaves pod a's e-t-h zero, goes through its v-e-t-h pair onto the host, and — same node — the host bridges directly to the other v-e-t-h and pod b sees it. No see-en-eye overlay, no kube proxy. Different node — the host routes the packet according to the see-en-eye's per-node routes. With calico in b-gee-pee mode, it is a plain layer-three hop. With flannel v-x-l-a-n, the packet is encapsulated in a you-dee-pee wrapper, sent to the destination node, and unwrapped there. No n-ay-tee in either case. The destination pod sees the source pod's eye-pee unchanged.
+
+Second, pod-to-service. Pod a calls h-t-t-p colon slash slash ay-pee-eye colon eighty. The kernel sees a packet destined for the service's cluster eye-pee, resolved via dee-en-ess from notebook four. Kube proxy's ip tables, eye-pee-v-s, or n-f tables rules dee-n-ay-tee it to one of the backing pod eye-pees — picked at random for cluster-eye-pee-type services. The destination pod sees the request from the client pod's eye-pee, not from the service eye-pee. The service eye-pee is virtual. Only the rule does any rewriting.
+
+Third, pod-to-external — the wider internet. Pod a wants to fetch h-t-t-p-s colon slash slash example dot com. The packet leaves the pod, hits the host. The pod's source eye-pee is not routable on the public internet, so the host source-n-ay-tees the packet to its own eye-pee before sending. Return traffic gets un-n-ay-teed on the way back. That is why external services see "the node's eye-pee," not "the pod's eye-pee," when a pod calls out. If you want the pod eye-pee to be visible — rare — you need extra work. External traffic policy local on a service, an egress gateway in the see-en-eye, or a service mesh.
+
+These three patterns explain almost every networking question on the see-kay-ay. "Why is service x unreachable" turns into "is this path one, two, or three, and which layer is breaking?"
+
+Why ingress.
+
+You have got services. They handle layer-four routing inside the cluster and, with type load balancer, can expose a workload publicly. So why is not service the whole answer?
+
+One load balancer per service is expensive and rigid. In a cloud cluster, each load balancer service provisions a separate cloud load balancer — an ay-double-you-ess elastic load balancer, a google cloud forwarding rule. That is tens of dollars per month per load balancer. A separate public eye-pee, or hostname, per load balancer. Hard to brand. No h-t-t-p-level routing. You cannot say "send slash ay-pee-eye slash anything to the ay-pee-eye service, slash static slash anything to the static service." No tee-el-ess termination at the load balancer. The pod has to do tee-el-ess itself. And no host-based routing. You cannot share one eye-pee between ay-pee-eye dot example dot com and web dot example dot com.
+
+What you want is one public entry point in front of many services, with h-t-t-p-aware routing. That is what an ingress gives you. Picture this. Four hostnames or hostname-plus-path combinations on the left — ay-pee-eye dot example dot com, w-w-w dot example dot com slash ay-pee-eye anything, w-w-w dot example dot com slash anything, and shop dot example dot com — all enter a single ingress controller with one load balancer eye-pee. The ingress controller fans them out to four in-cluster services — ay-pee-eye, ay-pee-eye, web, and shop — each backed by pods. The controller handles tee-el-ess, host routing, and path routing.
+
+One load balancer, or node port in cheaper setups — one public eye-pee — fans out to many in-cluster services based on h-t-t-p host and path.
+
+Ingress is the resource. Ingress controllers do the work. Ingress is just a kubernetes object — declarative configuration. It does nothing on its own. You have to install an ingress controller in the cluster. The controller watches ingress resources and configures the actual proxy. In other words, an ingress resource is a spec the controller obeys. Without a controller, an ingress is just yaml in et-see-dee.
+
+Ingress controllers.
+
+Several controllers exist. All read the same ingress resource format. All implement the routing differently.
+
+N-ginx ingress — n-ginx plus reload-on-change. The most-deployed. Cloud native computing foundation project, not affiliated with n-ginx incorporated's commercial product. Traefik — the traefik proxy. Auto-discovery, nice dashboard, popular for development. H-ay proxy ingress — h-ay proxy. Performance-focused. Ay-double-you-ess load balancer controller — ay-double-you-ess application load balancer. On elastic kubernetes service, provisions a real application load balancer per ingress, or one shared via the alb dot ingress dot kubernetes dot eye-o slash group dot name annotation. Google cloud engine and google kubernetes engine ingress — google cloud h-t-t-p-s load balancer. Default on google kubernetes engine. Istio gateway, linkerd, contour — built on envoy. Service-mesh-flavoured ingress.
+
+You pick one ingress controller per cluster, install it — typically via helm — and write ingress resources that target it.
+
+Ingress class — which controller handles which ingress. A cluster can have multiple ingress controllers — for example, an internal-only n-ginx and a public application load balancer. Each registers an ingress class resource. Ingresses pick their controller by setting spec dot ingress class name. There can be one default class, marked with the ingress class dot kubernetes dot eye-o slash is default class annotation set to true. Ingresses without an explicit ingress class name use it.
+
+What gets exposed. The ingress controller is itself a workload. To be reachable from outside the cluster, it is usually fronted by — service of type load balancer in cloud clusters. One cloud load balancer per controller, not per ingress resource. Cheap. Service of type node port in bare-metal or local clusters. Hit any node eye-pee on the node port. Or host network true on the controller pod. Listens directly on the node's port eighty and four-forty-three. Used when nothing else can share the port.
+
+Kind does not ship an ingress controller by default. To experiment, install n-ginx ingress with kind's special configuration — port mappings in the kind cluster config.
+
+Anatomy of an ingress resource.
+
+A minimal but realistic ingress has metadata with a name and any annotations, and a spec with an ingress class name, a tee-el-ess section, and a rules section.
+
+Field by field. Spec dot tee-el-ess does tee-el-ess termination. Each entry binds a list of hostnames to a secret of type kubernetes dot eye-o slash tee-el-ess, from notebook five. The controller serves h-t-t-p-s for those hosts using the cert in the secret.
+
+Spec dot rules does host-based routing. Each rule matches a host header. Pods behind do not have to know about the original host.
+
+Spec dot rules dot h-t-t-p dot paths does path-based routing within a host. Each path has a path field — the prefix or exact path to match. A path type field — prefix, the usual choice, exact, or implementation specific. Prefix matches slash ay-pee-eye, slash ay-pee-eye slash, and slash ay-pee-eye slash anything. Exact matches only slash ay-pee-eye. And a backend service name and port number — which service to route to.
+
+Annotations are anything controller-specific. N-ginx ingress annotations start with n-ginx dot ingress dot kubernetes dot eye-o slash. Application load balancer uses alb dot ingress dot kubernetes dot eye-o slash. Common cases — rewrite targets, redirect h-t-t-p to h-t-t-p-s, custom timeouts, basic auth.
+
+Tee-el-ess — the certificate side. The secret referenced by tee-el-ess secret name must be type kubernetes dot eye-o slash tee-el-ess and contain tee-el-ess dot c-r-t plus tee-el-ess dot key. Three ways to get one. Bring your own with kubectl create secret tee-el-ess. Use cert manager — an add-on that obtains certs from let's encrypt automatically, the production default. Or use the controller's annotations — some controllers, like application load balancer and google kubernetes engine ingress, integrate with cloud-side certificate stores. You reference the cert by ay-are-n or i-d instead of mounting a secret.
+
+The default backend. Requests that do not match any rule go to a default backend — usually a tiny pod that returns four-zero-four. The controller has a built-in one. You can override it per ingress or globally.
+
+The gateway ay-pee-eye.
+
+Ingress is showing its age. Half of every controller's behaviour lives in annotations — controller-specific magic strings — because the resource itself does not have fields for things like rate-limiting, header rewrites, or traffic splitting. The gateway ay-pee-eye is the official successor.
+
+It splits the single ingress object into three. Gateway class describes a kind of gateway implementation — the analogue of ingress class. Gateway is a physical listener — an eye-pee, a port, a tee-el-ess config. Owned by infrastructure or platform teams. And h-t-t-p route, plus gee-are-pee-see route, tee-el-ess route, and t-c-p route — route definitions attached to a gateway. Owned by application teams.
+
+Why bother. Cleaner role split. Platform admins own gateways. App teams own h-t-t-p routes. Are-back matches the split. Richer matching — headers, query parameters, methods, not just host and path prefix. First-class traffic splitting — send ninety percent to v one and ten percent to v two, as a built-in field, not an annotation. And protocol diversity — t-c-p, you-dee-pee, gee-are-pee-see, tee-el-ess. Same model, different route kinds.
+
+Status as of twenty twenty-six. Gateway ay-pee-eye v one is generally available. Most major ingress controllers support it side-by-side with ingress. The see-kay-ay still tests ingress. Learn ingress first. Expect to write gateways in production within the next year or two.
+
+Network policy — kubernetes' built-in firewall.
+
+Out of the box, the cluster is open. Every pod can reach every other pod in every namespace. That is deliberate — orchestration first, security policy as opt-in. Network policy is the opt-in.
+
+A network policy is a namespaced object that says, for the pods matching a selector — ingress, which sources can talk to them. And egress, which destinations they can talk to.
+
+A typical policy says — target pods in default with app equals web. For ingress, accept t-c-p slash eighty from pods labelled role equals frontend in the same namespace, or from any pod in the namespace ay-pee-eye gateway. For egress, allow outbound t-c-p slash five-four-three-two to pods labelled app equals postgres, and outbound you-dee-pee slash fifty-three to core-d-en-ess in any namespace. Everything else is implicitly denied.
+
+From and to are or-lists. Sub-fields are and-ed. A common mistake. In an ingress rule, the from list might have two entries — they are or-ed. Within an entry, the selectors are and-ed. So a single from entry with both a namespace selector "team equals a" and a pod selector "role equals frontend" matches pods labelled role frontend that are in namespaces labelled team a, not "any pod in team-a namespaces, or any frontend pod."
+
+Eye-pee block selectors. You can also match by see-eye-dee-are — useful for letting in, or out, external traffic. Use ip block with a see-eye-dee-are field, and optionally an except list to carve out ranges.
+
+Network policy semantics — additive allow, default deny.
+
+Three rules to internalise.
+
+First, network policy is "default-deny once any policy applies." If no network policy selects a pod, that pod's traffic is not restricted. The default cluster allow-all stands. The moment one network policy selects the pod, that pod becomes default-deny for the directions the policy lists in policy types, and only the explicitly allowed traffic gets through. So a policy with policy types ingress, and an empty ingress list, is deny-all-ingress for the matching pods. That is the default-deny pattern.
+
+Second, multiple policies are additive — a union. If two policies select the same pod, traffic is allowed if any of them allow it. There is no deny rule, no precedence, no override. Just — is at least one of my policies happy with this packet? If yes, allow. That is why you build up coverage with multiple narrowly-scoped policies. A default-deny plus targeted allows for specific apps.
+
+Third, network policy enforcement is the see-en-eye's job. The ay-pee-eye server stores network policy objects. The actual enforcement — the ip tables, eye-pee-v-s, or e-b-p-f rules that drop or allow packets — is done by the see-en-eye plugin. Not every see-en-eye implements network policy. Calico — yes, the reference implementation, extended with cluster-wide rules. Cilium — yes, adds layer-seven-aware policies and dee-en-ess-aware policies. Flannel alone — no. Must combine with calico, the result called canal, for policy. Weave net — yes, limited. And kind net, kind's default — no.
+
+If your cluster's see-en-eye does not support network policy, you can kubectl apply policies happily. The ay-pee-eye server accepts them. They show up in kubectl get net pol. And nothing changes. Test that your policy actually does something, on a see-en-eye that enforces it.
+
+A short test you can run after applying a policy. Spin up a sender pod with the right labels and verify connectivity to the target with w-get timeout two, or n-c dash w two. Repeat without the right labels. You should get a timeout.
+
+Network policy patterns — common recipes.
+
+A handful of policies cover eighty percent of real-world needs.
+
+Default deny everything in a namespace. The single most useful policy. A policy with pod selector empty, and policy types ingress and egress. Run this on a fresh namespace and nothing talks until you write an allow rule for it.
+
+Allow dee-en-ess to core-d-en-ess. Almost everything needs dee-en-ess. The exception that is easy to forget — once you have default-denied egress, you have to allow this back. An egress rule allowing you-dee-pee and t-c-p slash fifty-three to pods labelled k-eight-s app kube dee-en-ess in the kube system namespace.
+
+Allow only from the same namespace. Lock a namespace's pods so they only accept ingress from siblings. An ingress rule with from pod selector empty — meaning everything in this namespace.
+
+Allow from a specific namespace. Use the well-known label kubernetes dot eye-o slash metadata dot name, which the ay-pee-eye server adds automatically to every namespace. Match it in the namespace selector.
+
+Allow egress only to a specific service. Tricky, because policies select on pod labels, not service eye-pees. The standard pattern is to select the backend pods by the labels they carry. So an egress rule with a pod selector for app payments works because the pods backing the payments service have app payments. The policy lets traffic through regardless of whether the client used the service v-eye-pee or hit the pod directly. At the policy layer, both look the same once kube proxy has dee-n-ay-teed.
+
+Allow egress to the internet, deny internal. An ip block with see-eye-dee-are zero dot zero dot zero dot zero slash zero, and an except list of the r-f-c nineteen-eighteen private ranges — ten dot zero, one-seventy-two dot sixteen, one-ninety-two dot one-sixty-eight. Useful for sandboxed batch jobs that should never reach your internal services.
+
+The see-kay-ay test pattern. Common exam scenarios. "Namespace team-a should accept ingress only from namespace frontend." Or "deployment payments should only allow ingress from frontend on port eighty-eighty and egress only to the database on five-four-three-two." Write the policies. Verify with w-get from a test pod with the right and wrong labels.
+
+Core-d-en-ess revisit — customising cluster dee-en-ess.
+
+You met core-d-en-ess in notebook four. Every cluster ships it as a deployment in kube system, fronted by a service. The default config is fine for ninety-five percent of clusters. The cases that warrant customisation are below.
+
+The core-d-en-ess config map. Core-d-en-ess's config — its core file — lives in a config map named core-d-en-ess in kube system. Edit it with kubectl edit config map core-d-en-ess dash n kube system.
+
+Typical contents have a server block for the root domain on port fifty-three, with plugins including errors, health, ready, kubernetes for cluster dot local and in addr dot arpa and ip six dot arpa, prometheus on port ninety-one fifty-three, forward to slash e-t-c slash resolv dot conf, cache thirty, loop, reload, and load balance.
+
+Each line is a core-d-en-ess plugin. The interesting ones. Kubernetes cluster dot local — the source of all your service dee-en-ess, reading from the ay-pee-eye server. Forward dot slash e-t-c slash resolv dot conf — anything not in cluster dot local is forwarded to the node's upstream resolver. Cache thirty — cache positive responses for thirty seconds. And reload — reload the core file when the config map changes, without restarting pods.
+
+Adding a custom domain — forward to a specific upstream. Common case — pod-to-internal-service over a private hostname, like anything dot corp dot internal. Add a server block in the core file for corp dot internal on port fifty-three, forwarding to a specific eye-pee, with cache thirty. That tells core-d-en-ess — for anything dot corp dot internal, forward queries to that eye-pee instead of the default upstream. Save the config map. Core-d-en-ess's reload plugin picks it up.
+
+Per-pod dee-en-ess configuration. If you need one specific pod to use different dee-en-ess settings — different search domains, different nameservers, a custom n-dots — the pod spec supports dee-en-ess config. Set dee-en-ess policy to none — do not inherit from kube-let — and dee-en-ess config with name servers, searches, and options.
+
+Dee-en-ess policy values. Cluster first, the default, uses core-d-en-ess. Default uses the node's resolv dot conf. None uses only dee-en-ess config. And cluster first with host net — for host network pods.
+
+N-dots and the lookup-multiplier problem. The default n-dots five in pod resolv dot conf means any name with fewer than five dots tries every search domain first. Curl h-t-t-p-s colon slash slash google dot com triggers four failing lookups — google dot com dot default dot s-v-c dot cluster dot local, google dot com dot s-v-c dot cluster dot local, google dot com dot cluster dot local, and google dot com dot the next search domain — before the real one. Performance-sensitive workloads override to n-dots two.
+
+Cleaning up.
+
+Delete everything this notebook created so the cluster is tidy for notebook ten. Run kubectl delete deployment hello, kubectl delete service hello, kubectl delete ingress hello, and kubectl delete namespace n-pee demo. Or, more broadly, kubectl delete deployment, comma, service, comma, ingress, dash dash all, then kubectl delete namespace n-pee demo.

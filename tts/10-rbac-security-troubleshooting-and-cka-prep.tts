@@ -1,0 +1,241 @@
+Are-back, security, troubleshooting, and see-kay-ay prep.
+
+What is covered. This notebook walks through identity in kubernetes — humans, called users, versus workloads, called service accounts, and how each authenticates. Service accounts — pod identity, automounted tokens, the projected service account token. Are-back — role, cluster role, role binding, and cluster role binding. Verbs, resources, and subjects. Aggregated roles, and the well-known defaults — view, edit, admin, and cluster admin. Kubectl auth can-eye — the fastest "did my are-back rule actually do what I wanted?" check. Pod security context — run as user, run as non root, file system group, capabilities, read-only root, and seccomp. Pod security admission — the replacement for the deprecated pod security policy, with its three levels — privileged, baseline, and restricted. Et-see-dee encryption at rest — the encryption configuration object, the most see-kay-ay'd extra-credit cluster-hardening step. Image security and supply chain — private registries, image signing with sigstore and cosign, the image pull policy gotcha. Troubleshooting playbooks — application failures, control plane failures, worker node failures, and networking failures, in the order the see-kay-ay tests them. Kubectl power tools — explain, dry run client, debug, top, and auth can-eye. And exam strategy — what to drill, how to spend the two-hour budget, and the tricks worth remembering.
+
+By the end of this notebook you should be able to write any are-back role from scratch in under a minute, harden a pod's security context with production-grade defaults, identify why a pod or node or service is broken without flailing, and walk into the see-kay-ay with a punch-list of muscle-memory you can lean on under time pressure. Notebooks two through nine are the prerequisites. This is the chapter that pulls everything together and adds the security-and-troubleshooting layer the exam grades heavily.
+
+Identity in kubernetes — users versus service accounts.
+
+Two kinds of identity exist in a cluster, and they are easy to mix up.
+
+Users — for humans, and continuous-integration systems. A user is whatever the ay-pee-eye server figures out from your kube config. A client certificate's subject, like see-en alice o engineering — alice is the user, engineering is a group. An open eye-dee connect i-d token's sub claim. A static token in a token file, mapped to a username. Or a webhook auth response.
+
+Users are not kubernetes objects. There is no kubectl create user alice. The ay-pee-eye server does not store them, does not authenticate them itself. It just recognises the identities your authenticator chain returns. Add a user by issuing a new client cert, signed by the cluster certificate authority, or by configuring an open eye-dee connect provider.
+
+Service accounts — for pods. A service account is a kubernetes object that exists in the ay-pee-eye server, namespaced, with a name like default slash ay-pee-eye server. Pods reference a service account by name. The kube-let mounts a token for that service account into the pod. The pod uses that token to call the ay-pee-eye server.
+
+Service accounts are how workloads authenticate. Users are how people authenticate. The ay-pee-eye server can apply are-back to either — same rules, same subjects-list syntax.
+
+The default service account. Every namespace gets a default service account, and every pod that does not specify one uses it. The default service account has no permissions. Are-back bindings to it are zero by default. Do not grant default more than it needs. Create a workload-specific service account.
+
+Groups. Both users and service accounts have a notion of groups. Users belong to groups parsed from the cert's o fields, or the open eye-dee connect groups claim. Service accounts belong to four automatic groups. System colon service account colon namespace colon name — this exact service account. System colon service accounts colon namespace — every service account in the namespace. System colon service accounts — every service account in the cluster. And system colon authenticated — any authenticated identity.
+
+That last one matters. A cluster role binding to system authenticated grants everybody, including every service account. Use sparingly.
+
+Service accounts — pod identity.
+
+What the kube-let mounts. When a pod is scheduled, the kube-let asks the ay-pee-eye server's token request ay-pee-eye for a projected j-w-t token for the pod's service account. It mounts three files into the pod at slash var slash run slash secrets slash kubernetes dot eye-o slash service account. See-ay dot c-r-t — the ay-pee-eye server's certificate authority, for verifying tee-el-ess. Namespace — the pod's namespace, as a string. And token — the j-w-t, signed by the cluster's token signing key.
+
+In-cluster ay-pee-eye clients — the official client libraries, kubectl from inside a pod — read these three files to construct an authenticated connection.
+
+Modern, bound, tokens. The tokens the kube-let projects today have an expiration — typically one hour, with the kube-let rotating them automatically. Audiences — the token is only valid for kubernetes dot default dot s-v-c and similar. And a binding to the pod — if the pod is deleted, the token is revoked. Legacy long-lived service account tokens — a secret per service account, never expiring — are still creatable in older clusters but have been phased out. Treat any service account token secret older than kubernetes one point twenty-four as suspicious.
+
+Automount service account token false. By default the kube-let mounts a token into every pod. For workloads that do not talk to the ay-pee-eye server, mount nothing — set automount service account token to false in the pod spec. This is best practice for pure web servers, database engines, anything that does not call the ay-pee-eye server. Reduces blast radius.
+
+Image pull secrets via service account, from notebook five. A registry credential attached to a service account applies automatically to every pod that uses it. Run kubectl patch service account default with a patch that sets image pull secrets. No per-pod image pull secrets needed.
+
+Are-back — roles and cluster roles.
+
+Are-back, role-based access control, is kubernetes' permission system. It answers the auth-z question from notebook eight — can this subject do this verb on this resource?
+
+Two kinds of role objects, identical in shape, different in scope. Role — namespaced, grants permissions on resources in one namespace. Cluster role — cluster-scoped, grants permissions on cluster-scoped resources like nodes, persistent volumes, and namespaces themselves, on non-resource u-r-ls like slash health-z and slash metrics, and on resources in every namespace when used with a cluster role binding.
+
+A role manifest has metadata with a name and namespace, and rules. Each rule has three parts.
+
+Ay-pee-eye groups — the empty string means the core group, which holds pod, service, config map, namespace, and more. Other examples are apps, which has deployments and stateful sets. Batch, which has jobs and cron jobs. Networking dot k-eight-s dot eye-o, which has ingress and network policy. And are-back dot authorization dot k-eight-s dot eye-o, which has roles and bindings.
+
+Resources — the lowercase plural kind. Pods, deployments, secrets. Sub-resources use a slash — pods slash log, pods slash exec, deployments slash scale.
+
+Verbs — get, list, watch, create, update, patch, delete, delete collection. Plus a few special ones — star, meaning everything, impersonate, meaning act as another user, and bind and escalate, which are are-back-specific.
+
+Common verb combinations. Read-only access — get, list, watch. Read and modify — add create, update, and patch. Full control — add delete. Delete-by-label-selector — add delete collection. And run kubectl exec or logs — get on pods slash exec and pods slash log.
+
+The "no deny" rule. Are-back is purely additive. There is no way to write "deny x." Permissions accumulate from every binding that names you. To remove a permission, you delete the binding that grants it.
+
+Are-back — bindings, subjects, and auth can-eye.
+
+A role, or cluster role, is just permissions. It does not apply to anyone until you bind it to a subject.
+
+Role binding — namespace-scoped. Binds a role, or a cluster role, to subjects in one namespace. Cluster role binding — cluster-scoped. Binds a cluster role to subjects across the whole cluster.
+
+A binding has subjects and a role ref. Each subject is one of three kinds. User — kind user, with the username your authenticator returned. Service account — kind service account, with name and namespace. Or group — kind group, with the group name.
+
+The role versus cluster role crossover. A role binding can bind a cluster role, not just a role. When it does, the cluster role's permissions only apply in that binding's namespace. This is the standard trick for "reuse one cluster role across many namespaces." Define the cluster role once, then create a role binding in each namespace whose role ref points to the cluster role kind.
+
+Kubectl auth can-eye — the verification tool. The single most useful are-back command. Asks the ay-pee-eye server "would this verb on this resource be allowed for me, right now?"
+
+Kubectl auth can-eye list pods checks for yourself in the current namespace. Add dash n with a namespace to specify one. Add dash dash as with a user name to impersonate, which needs the impersonate permission. And kubectl auth can-eye star star dash dash all namespaces asks "am I cluster admin?"
+
+Returns yes, no, or "yes with a warning," and an exit code. The see-kay-ay expects you to use this all the time.
+
+Imperative creation. Quickest way to get a role and binding for the exam. Kubectl create role, with a name, then dash dash verb followed by comma-separated verbs, then dash dash resource followed by comma-separated resources. Kubectl create role binding, with a name, then dash dash role pointing at the role name, then dash dash user, or dash dash service account, with the subject. Kubectl create cluster role and kubectl create cluster role binding have the same shape. Add dash dash dry run client dash o yaml if you want a yaml template to edit.
+
+Aggregated and default roles.
+
+Kubernetes ships several cluster roles you can rely on by name. The big four. Cluster admin — everything, everywhere. The root role. Admin — full control of a namespace's resources, but cannot modify the namespace itself or its quotas. Granted via role binding. Edit — read-write on workloads — pods, deployments, services, config maps, secrets. Cannot manage are-back. And view — read-only on most workloads, excluding secrets.
+
+You will see these in every cluster. Kubectl get cluster roles, piped to grep for admin, edit, view, and cluster admin. The standard pattern is kubectl create role binding for team a admins, with cluster role admin, and group team a admins. Gives a whole group namespace-admin in one namespace.
+
+Aggregation — composing cluster roles. A cluster role can be defined as the union of other cluster roles, via labels. The well-known view, edit, and admin roles are all aggregated. You can extend them by adding a new cluster role with the right label — for example, are-back dot authorization dot k-eight-s dot eye-o slash aggregate to view, set to true. That cluster role gets folded into view. After it is applied, anyone bound to view automatically gets read access to the extra resources too. The control-plane's are-back controller watches for the labels and re-aggregates.
+
+The system colon reserved roles. Many system colon cluster roles ship with the cluster. System basic user and system discovery — anonymous and authenticated discovery. System node — the role the kube-let uses for its node-side calls. And system kube controller manager and system kube scheduler — per-component. Do not bind directly to these. They are built-ins the control plane manages.
+
+Granting view excludes secrets — for a reason. The view cluster role deliberately excludes secrets. If you bind someone to view and they ask "why can't I read secrets?" — the answer is "you should not be able to, secret data is high-trust." If they truly need secret access, give them a separate, narrower role.
+
+Pod security context.
+
+Containers by default run as root inside their pod, with all the linux capabilities the runtime allows. Both are dangerous. The security context is your toolkit for hardening.
+
+A pod-level security context can set run as non root true, run as user, run as group, file system group, and a seccomp profile with type runtime default. A container-level security context, which overrides the pod-level one, can set allow privilege escalation false, read-only root filesystem true, run as user, and capabilities with drop "all" and an optional add list.
+
+Field by field. Run as user and run as group — the u-eye-dee and gee-eye-dee the container's first process runs as. Numbers, not names. The kernel only knows numbers. Run as non root true — the container fails to start if it tries to run as u-eye-dee zero. The cheapest safety net. Use it. File system group — the gee-eye-dee applied to all files in the pod's mounted volumes. Lets a non-root container actually write to a volume.
+
+Allow privilege escalation false — equivalent to set-u-eye-dee and set-gee-eye-dee being disabled. Combined with run as non root, the container cannot get root by tricks. Read-only root filesystem true — slash is mounted read only. Anything that needs to write needs an empty dir mount at the right path. Killer of "exploit drops a binary in slash tmp" attacks.
+
+Capabilities drop all — drop every linux capability the runtime would have granted. Combine with add for the few you actually need. And seccomp profile type runtime default — apply the runtime's default seccomp filter, which blocks dangerous syscalls. Set unconfined only if you really need it.
+
+Privileged pods. Privileged true on a container's security context turns off all the restrictions. The container has full root on the node, can write to host devices, can load kernel modules. Only daemon sets that need to manage the node — see-en-eye agents, see-ess-eye drivers, some monitoring — should ever set this. Restrict via pod security admission, which we cover next.
+
+Run as non root plus non-root images. A common trip-up — you set run as non root true but the image's default user is root. Either set run as user to something not zero in the pod spec, or build the image with a user one thousand line in the docker file. Many official images now ship as non-root by default — modern bitnami, chainguard, and distroless images.
+
+Pod security admission.
+
+Setting a security context on each pod is great, but you want a blanket policy that rejects pods which do not meet the bar. That is what pod security admission does. It replaced pod security policy, which was deprecated and removed in one point twenty-five.
+
+Pod security admission defines three levels of policy, applied per-namespace via labels. Privileged — everything. No restrictions. Default for kube system and friends. Baseline — sane defaults. No privileged true, no host namespaces, no host path, no net admin. Good for general workloads. And restricted — the hardest line. Must be non-root, must drop all capabilities, must use seccomp, no privilege escalation. Match for high-trust workloads.
+
+And three modes that decide what happens when a pod violates the level. Enforce — reject the pod at admission. Audit — allow but write an audit event. And warn — allow but return a warning to the user, visible in kubectl apply output.
+
+You apply these by labelling the namespace. Set pod-security dot kubernetes dot eye-o slash enforce to a level. Optionally set pod-security dot kubernetes dot eye-o slash enforce dash version, plus the warn and audit labels too. After applying, any pod created in that namespace that does not meet the level is rejected with an explanation listing which checks failed.
+
+The migration recipe. Common pattern for adopting pod security admission on an existing cluster. One — start with warn and audit at the target level. Existing pods are not blocked but you see what would break. Two — fix the pods. Three — switch to enforce. This avoids breaking production when you turn the switch.
+
+Custom admission with gatekeeper or kyverno. Pod security admission's three levels are coarse-grained. For finer rules — "no deployments without a team label," "all ingresses must terminate tee-el-ess," "deny images from unapproved registries" — the standard tools are opa gatekeeper, a rego-based policy engine, and kyverno, kubernetes-native policy in yaml. Both implement validating, and mutating, admission webhooks. Out of scope for the see-kay-ay, standard for production-grade clusters.
+
+Et-see-dee encryption at rest.
+
+Out of the box, secret data in et-see-dee is base64-encoded but not encrypted, as covered in notebook five. Anyone with read access to the et-see-dee data directory — a node attacker, an old backup snapshot — can read every secret in plaintext.
+
+The fix is an encryption configuration read by the ay-pee-eye server, which encrypts specific resource types before writing them to et-see-dee. The config object lists resources — for example, secrets and config maps — and providers. A provider can be ay-ee-ess see-bee-see with a list of keys, or one of the other providers. After the config, fallback to identity, which means no encryption, so existing unencrypted data stays readable during migration. Then pass dash dash encryption provider config, pointing at the file, to the ay-pee-eye server, in the static-pod manifest from notebook eight.
+
+Provider ordering matters. The first provider in the list is used for encrypting writes. All providers can be used for decrypting reads. So during a key rotation. One — add the new key as the first provider, old key as the second. Restart the ay-pee-eye server. Two — re-encrypt existing data. Kubectl get secrets dash capital-a dash o j-son, piped to kubectl replace dash f dash. This triggers each secret to be re-written, picking up the new encryption. Three — remove the old key from the config. Restart the ay-pee-eye server.
+
+Identity, an empty object, is the "no encryption" provider. Keep it last during migration so existing unencrypted secrets stay readable.
+
+What gets encrypted. You list resource types in resources dot resources. The most common targets. Secrets — essential. Config maps — if you unwisely put credentials there. And custom resources where the custom resource definition allows. Pods, services, nodes — usually not encrypted. The data is not sensitive in the same way.
+
+Kay-em-ess providers. For the strongest setup, instead of a static key in ay-ee-ess see-bee-see, use a kay-em-ess provider that talks to an external hardware-security module or kay-em-ess. The kay-em-ess provider type points at a unix socket where a kay-em-ess plugin listens. Plugins exist for ay-double-you-ess kay-em-ess, gee-see-pee kay-em-ess, azure key vault, and hashi-corp vault. The actual encryption key never lives in et-see-dee or on the ay-pee-eye server's disk. Out of scope for the see-kay-ay, common in production.
+
+What this is not. Encryption configuration only protects data at rest in et-see-dee. It does not encrypt secrets in transit to the kube-let — those are already protected by tee-el-ess. It does not encrypt secrets mounted into pod filesystems — those are visible to anyone with pod access. And it does not encrypt backups that include the unencrypted et-see-dee snapshot. Use data-dir-level encryption for those.
+
+Image security and supply chain.
+
+The see-kay-ay touches image security lightly. Production clusters care a lot.
+
+Trust the image's digest, not its tag. A tag like n-ginx tag one point twenty-seven alpine is a moving label. The registry can rewrite it at any time. A digest like n-ginx at s-h-a two-fifty-six a-b-c is an immutable content hash. Use digests in production manifests. Use tags in development.
+
+The see-kay-ay-relevant flag. Image pull policy defaults to always for tag latest and unset tags. The registry is contacted on every pod start. And defaults to if not present for specific tags. Using digests gets you immutability without the latency cost.
+
+Private registries — recap. Notebook five's kubectl create secret docker registry, plus pod's image pull secrets field, or attached to the service account. The kube-let uses the credential when pulling. For cloud-managed clusters — elastic kubernetes service, google kubernetes engine, azure kubernetes service — the node's identity-and-access-management identity can be granted registry access directly. No image pull secret needed.
+
+Image signing — sigstore and cosign. Two community standards. Sigstore — a project umbrella for keyless code signing using open eye-dee connect identities. Cosign is the command-line interface. And notation — the open container initiative standardised image signing toolchain. Signed images are verified at admission time by tools like connaisseur, or kyverno. Pods running unsigned images can be rejected.
+
+Vulnerability scanning. Out of scope for the cluster's admission layer, but core to your supply chain. Trivy — open-source scanner, runs locally, integrates with continuous integration. Snyk, anchore, cloud-native scanners like elastic container registry scan-on-push, and google container registry container analysis. In the see-kay-ay you will not be asked to set this up, but you should know — scan images before they enter the cluster is the responsibility of your continuous-integration pipeline, not the cluster.
+
+Runtime security. Falco — e-b-p-f-based runtime detection. Watches syscalls in pods, alerts on suspicious patterns. A web server should not be exec-ing bash. And app armor and ess-ee-linux profiles — per-container kernel-level confinement, configured via security context. Both are out of scope for the see-kay-ay but standard for production.
+
+Troubleshooting — application failures.
+
+About thirty percent of the see-kay-ay is troubleshooting. The exam gives you a broken cluster. You fix it. The fastest path is to know the failure modes and the first commands to run for each.
+
+Pod is pending. Run kubectl describe pod with the name. The events section is where the answer lives. Common reasons. Failed scheduling — no node fits. Read the reason — insufficient see-pee-you or memory, untolerated taint, node selector mismatch, volume zone affinity unsatisfied. Failed attach volume, or failed mount — persistent volume claim is not binding, or the volume is on a different node. And image pull back off, or err image pull — image does not exist or the pull secret is wrong.
+
+Pod is running but the container keeps restarting — crash loop back off. Run kubectl logs with the name for the current container, usually empty if it crashed fast. Then kubectl logs with the name and dash dash previous for the previous container's logs. That is what crashed. Then kubectl describe pod to check restart count and the last exit code. And kubectl exec into the pod with sh, if it is running long enough.
+
+Common reasons. Application bug, usually visible in logs. Oh-oh-em-killed — exit code one-three-seven. The container exceeded its memory limit. Kubectl describe shows reason oh-oh-em-killed in the last state. Missing config — a config map or secret reference is broken. And failing readiness probe — the container does not restart, but the service will not route. Check kubectl get pod for ready zero of one.
+
+Pod cannot reach a service. Run kubectl get s-v-c with the name — does the service exist? Kubectl get endpoints with the name — do endpoints exist? None means selector mismatch. Kubectl describe s-v-c — shows the selector and endpoint addresses side-by-side. Then from a sibling pod — n-s lookup with the service name, to check dee-en-ess. And n-c dash v-z with the service name and port, to check the port.
+
+Kubectl debug — ephemeral debug containers. When the pod is too minimal to inspect — distroless, scratch — attach an ephemeral debug container. Kubectl debug dash i-t with the pod name, image busybox, and dash dash target the container name. The debug container shares the target pod's process namespace. You can p-s, cat slash proc slash p-i-d, run network tools. The debug container is gone when you exit. For node-level debug — drop into the node itself with kubectl debug node slash the node name, dash i-t, image busybox. Mounts the node's root at slash host inside the debug pod. Useful when you need to read kube-let logs and the static pod manifests.
+
+Troubleshooting — control plane failures.
+
+Symptom — kubectl returns connection refused or i slash o timeout. The ay-pee-eye server is not reachable. Either it is down, or your kube config points at the wrong place. From the control-plane node — sudo see-are-eye-ctl p-s, piped to grep apiserver, to see if the static pod is running. Sudo journalctl dash you kube-let dash n fifty for kube-let logs, which show why static pods failed. And ls slash e-t-c slash kubernetes slash manifests, to see if the manifests are still there. Common causes — bad flag in a static-pod manifest. You edited kube ay-pee-eye server dot yaml and broke it. The kube-let logs are explicit. Cert expired. See notebook eight. Kube-ay-dee-m certs check expiration from the node. And et-see-dee down. The ay-pee-eye server cannot start without et-see-dee.
+
+Symptom — pods stuck container creating cluster-wide. Usually one of two things. See-en-eye broken — check the see-en-eye pods in kube system. Their logs tell you why. Or kube-let cannot reach the ay-pee-eye server. Partial control-plane outage. The kube-let keeps retrying.
+
+Symptom — nodes not ready. Run kubectl describe node, read the conditions section. Then ess-ess-h to the node. Sudo system-d status kube-let — is the kube-let running? Sudo journalctl dash you kube-let dash n one hundred — what is it complaining about? Common kube-let failures. Cannot reach ay-pee-eye server — wrong kube config, expired cert, firewall. Container runtime down — sudo system-d status container-d. Disk pressure — d-f dash h on the kube-let and container-d data dirs. Full disk flips the node to not ready.
+
+Symptom — scheduler or controller manager not making decisions. Check their logs from the static pod. Kubectl logs dash n kube system, the kube scheduler pod, or the kube controller manager pod. Common — leader-election lease lost. Look for "failed to acquire lease" lines. Or are-back permission missing.
+
+Symptom — ay-pee-eye server slow. Profile what is calling it. Kubectl get dash dash raw slash metrics, piped to grep apiserver request duration seconds. Often the culprit is a noisy client — a runaway controller polling instead of watching — or et-see-dee being slow.
+
+Troubleshooting — worker node failures.
+
+Step one — what does the cluster see? Run kubectl get nodes dash o wide, and kubectl describe node with the name. Read the conditions block. Five matter. Ready — overall health. Memory pressure, disk pressure, p-i-d pressure — eviction triggers. And network unavailable — see-en-eye has not configured the node. Read the events block at the bottom — taints applied, evictions, system out-of-memory kills.
+
+Step two — ess-ess-h to the node, check the kube-let. Sudo system-d status kube-let. Sudo journalctl dash you kube-let dash n two hundred dash dash no pager. The kube-let logs every probe failure, every container start, every eviction. Read them backwards from now until you find the first complaint.
+
+Step three — check the container runtime. Sudo see-are-eye-ctl p-s — running containers, via see-are-eye. Sudo see-are-eye-ctl images — cached images. Sudo system-d status container-d, or see-are-eye-oh. Sudo journalctl dash you container-d dash n one hundred. See-are-eye-ctl is the see-are-eye tools utility, like docker p-s but speaks see-are-eye directly. Useful when the kube-let is down but you want to see what is running.
+
+Step four — check disk. D-f dash h. Sudo d-you dash s-h on slash var slash lib slash container-d, slash var slash lib slash kube-let, and slash var slash log slash pods. Big offender — log rotation broken. The kube-let keeps the last n container logs per pod, but a misconfigured logging setup can fill the disk.
+
+Step five — check network. Ip addr — is the see-en-eye interface present? Ip route — are the pod-see-eye-dee-are routes there? Ip tables dash t n-ay-tee dash l kube services dash n — are kube proxy rules installed? And sudo see-are-eye-ctl logs with the see-en-eye agent pod id — for the see-en-eye agent's own logs.
+
+Common quick fixes. Cordon and drain the node for maintenance — kubectl cordon, then kubectl drain dash dash ignore daemon sets. Uncordon when fixed — kubectl uncordon. Force a kube-let restart — sudo system-d restart kube-let. And recreate a single kube proxy pod — kubectl delete pod in kube system. The daemon set replaces it.
+
+Troubleshooting — networking failures.
+
+"Service is unreachable from a pod." The three-question flowchart. One — does dee-en-ess resolve? From inside a test pod — n-s lookup with the service name. If no, the problem is core-d-en-ess or the pod's dee-en-ess policy or resolv dot conf. Two — is the service backed by endpoints? Kubectl get endpoints with the service. If none, your selector is wrong or pods are not ready. Kubectl describe s-v-c shows the selector. And three — can the pod reach the port? From a test pod, n-c dash v-z with the service name and port. If no, you are looking at a network policy, or a see-en-eye issue.
+
+"I can hit the service but it goes to the wrong pod." Usually two services with overlapping selectors. A pod matches both, and you are seeing the wrong service's pod. Or session affinity is wrong for your protocol — set session affinity client eye-pee if you need sticky.
+
+"External traffic is not reaching the cluster." For load balancer services — kubectl get s-v-c dash o wide. Is the external eye-pee populated? If pending, your cloud load balancer controller has not provisioned it. For ingress — kubectl describe ingress. The address column should show the controller's load balancer. If empty, the controller is not watching this ingress's ingress class.
+
+"Network policy is not blocking anything." Wrong see-en-eye. Kind net does not enforce. See notebook nine's table. No policy selects the pods. Pods without any matching policy fall back to allow all. Or the policy's from, or to, is too permissive. Re-read the or-list and and-fields rule from notebook nine.
+
+"I get connection refused from outside." Layered checks. One — is the node's eye-pee reachable? Two — is the node port open on the node? Three — is the service's selector matching pods? Kubectl get endpoints. Four — are the pods listening on the right port? Kubectl exec the pod, and run netstat dash l-n or ss dash l-n. Five — is the container's port the same as container port and target port?
+
+Kubectl run dash dash r-m t-m-p, image nicolaka slash netshoot, dash i-t, bash. The classic debug-pod-in-a-pod move. Netshoot ships every networking tool you can think of — dig, n-s lookup, t-c-p dump, m-t-r, curl, n-c, iperf three, kubectl, ss, ip. From inside it you can prod the cluster the way a misbehaving pod would.
+
+Kubectl power tools.
+
+Kubectl explain — the offline ay-pee-eye reference. Run kubectl explain on a dotted path like pod dot spec dot containers dot resources to see all the fields at that path. Add dash dash recursive for the full subtree.
+
+Dry run client. Kubectl create deployment or run or expose with dash dash dry run client dash o yaml prints the manifest without sending it to the cluster. Pipe to a file, edit, and apply. This is the single most important time-saver on the exam.
+
+Auth can-eye with impersonation. Kubectl auth can-eye, followed by a verb and resource, with dash dash as set to a service account or user, returns yes or no. The fastest "did my are-back work?" check.
+
+Kubectl top — needs metrics server. On kind it is usually not installed. On managed clusters it is. Kubectl top nodes and kubectl top pods show see-pee-you and memory usage live.
+
+Kubectl ay-pee-eye resources — every kind in this cluster, with its short name, ay-pee-eye group, and whether it is namespaced. Add dash dash namespaced equals true to filter.
+
+See-kay-ay exam strategy.
+
+The see-kay-ay is two hours, fifteen to twenty hands-on tasks, scored by automated test scripts. You are given access to a fleet of practice clusters in a browser terminal. You fix things.
+
+Time budget. Read the whole question before typing. The context switch instruction at the top of each task — kubectl config use context, with a name — is mandatory. Missing it means working on the wrong cluster. Skip and return on the hard ones. Each question is worth a fixed number of points. Spending thirty minutes on a four-point task while leaving a nine-point task untouched is a losing trade. Mark later, move on. Save ten minutes at the end to re-check skipped items.
+
+Aliases you will be glad you set. Alias k equals kubectl. Export d-o equals dash dash dry run client dash o yaml. Export now equals dash dash grace period zero dash dash force. Source the kubectl completion script. And complete dash o default dash f start kubectl k, to enable tab completion for the alias.
+
+The single most important muscle memory. Kubectl run x, image n-ginx, dry run client, dash o yaml, redirect to a file. Then vim the file. Then kubectl apply dash f. Almost every "write a manifest" task is faster with this than with raw yaml. Same with kubectl create deployment, service, config map, secret, role, role binding, cron job, plus dry run client dash o yaml.
+
+Imperative shortcuts you must know. Kubectl run pod, image n-ginx, port eighty. Kubectl create deployment d, image n-ginx, replicas three. Kubectl expose deployment d, port eighty, target port eighty-eighty. Kubectl scale deployment d, replicas five. Kubectl set image deployment slash d app n-ginx tag one point twenty-eight. Kubectl rollout undo deployment slash d. Kubectl create config map c, from literal key equals value. Kubectl create secret generic s, from literal key equals value. Kubectl create role r, verb get, list, resource pods. Kubectl create role binding r-b, role r, user alice. Kubectl taint nodes n, key equals value colon no schedule. Kubectl label node n, disk equals s-s-d. Kubectl drain n, ignore daemon sets. And kubectl cordon and uncordon n.
+
+Pre-built drill list. Things to be able to do in under five minutes each without referencing docs. Write a deployment and service from scratch. Add liveness and readiness probes to an existing deployment. Create a config map from a literal and mount it as both env vars and a volume. Create a role for "read pods in namespace x" and bind it to a service account. Apply a network policy that denies all ingress except from a labelled namespace. Take an et-see-dee snapshot, then restore from it. Scale a deployment, do a rolling update, undo it. Drain a node, cordon, evict, uncordon. And find why a pod is pending, crash loop back off, or image pull back off.
+
+Reference allowed during the exam. You can browse kubernetes dot eye-o slash docs, and the github repos for kube-ay-dee-m, et-see-dee, kube scheduler, and kube controller manager during the exam. Do not rely on it for muscle memory. Searching docs eats time. Use it for syntax you genuinely do not remember.
+
+Common gotchas. Wrong namespace — half of failed answers are "you wrote it in default instead of team-a." Always check dash n first. Wrong context — each question's use context is mandatory. Selector and template mismatch — a deployment with mismatched selector and template labels will not deploy. Copy app foo into both. Forgetting run as non root defaults — pod security admission tasks fail silently if the pod's image runs as root. And kubectl delete pod does not respect pod disruption budgets. Kubectl drain does. Use drain when the question asks about graceful disruption.
+
+You are at the end of the course.
+
+You have gone from "I have never run a pod" to a ten-chapter map of kubernetes — from primitives to cluster operation. The exam tests a slice of this — but the slice is wide. Treat the practice clusters as the real exam. Time-boxed, no second chances, all keyboard.
+
+What this notebook leaves behind. Kubectl delete pod s-a demo and hardened. Kubectl delete service account demo-s-a and reader-s-a. Kubectl delete role pod reader. Kubectl delete role binding reader-s-a pod reader and reader-s-a view.
+
+Beyond the see-kay-ay. If the see-kay-ay went well, the natural follow-ons. See-kay-ay-dee — certified kubernetes application developer. Workload-side, lighter cluster admin. See-kay-ess — certified kubernetes security specialist. Needs see-kay-ay first. Deep dive on the security context, pod security admission, audit logging, image policy, runtime security with falco, and supply chain. The gateway ay-pee-eye — the future of layer-seven routing, peeked at in notebook nine. Service meshes — istio, linkerd, cilium service mesh. And multi-cluster — argo see-dee app of apps, cluster ay-pee-eye, karmada.
+
+Everything you have learned about declarative state, controllers, label selectors, and the ay-pee-eye server applies to all of them. Kubernetes is a language for distributed systems. New tools speak the same one.
+
+Good luck with the exam.

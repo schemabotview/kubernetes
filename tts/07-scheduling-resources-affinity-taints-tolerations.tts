@@ -1,0 +1,165 @@
+Scheduling — resources, affinity, taints, and tolerations.
+
+What is covered. This notebook walks through the scheduling problem — what kube scheduler actually does, and what "binding" means. Resource requests and limits — see-pee-you and memory, the milli, mebibyte, and gibibyte units, and what happens when each is set or omitted. Quality-of-service classes — guaranteed, burstable, and best effort, and how they decide which pods get evicted first. Limit range and resource quota — namespace-level defaults and hard caps. Node selector — the simplest "put me on this kind of node" tool. Node affinity — required and preferred, set-based selectors, and when to reach for them instead of node selector. Pod affinity and anti-affinity — placement relative to other pods, with the topology key trick. Taints and tolerations — the node-side "go away unless you have explicitly opted in." Eviction — what the kube-let does under memory or disk pressure, and how quality-of-service class drives the order. Topology spread constraints — even distribution of replicas across zones, hostnames, or any topology. Priority class and preemption — high-priority pods that can kick lower ones out. And how the scheduler decides — filtering, scoring, and scheduling profiles in one paragraph.
+
+By the end of this notebook you should be able to write a pod that is guaranteed not to be evicted under memory pressure, pin pods to specific nodes, repel pods from special-purpose nodes, and reason about why the scheduler made the choice it made. Notebooks two and three are the prerequisites — every scheduling field in this notebook lives in spec of a pod or a deployment's pod template.
+
+The scheduling problem — what kube scheduler does.
+
+When you kubectl apply a deployment, the deployment controller creates a replica set, the replica set controller creates pods, and the ay-pee-eye server writes them to et-see-dee, with spec dot node name empty. At this point the pods are pending. No node has been chosen.
+
+The kube scheduler picks up there. It runs a tight loop. First, it watches the ay-pee-eye server for pods that have no node name set. Second, for each such pod, it filters the cluster's nodes — keep only those that could run this pod, with enough free see-pee-you and memory, taints satisfied, node selectors satisfied, volumes available in the right zone, and so on. Third, it scores the remaining nodes — assigns a number from zero to one hundred reflecting how good a fit each one is. Fourth, it picks the highest-scoring node and binds the pod to it — writes spec dot node name via the ay-pee-eye server's bind subresource. Fifth, the kube-let on that node sees that the pod's node name equals its own name, pulls the image, and starts the container.
+
+Picture this. The ay-pee-eye server holds pods with empty node names. The kube scheduler watches them. It filters, scores, and binds. The bound pod is patched back into the ay-pee-eye server. The kube-let on the chosen node watches the ay-pee-eye server, sees the pod is now bound to its node, and starts the container.
+
+A few things to internalise. The scheduler does not run anything. It just decides where the pod goes. The kube-let runs it. The scheduler is a controller — same loop pattern as everything else in kubernetes, read state, take action, write state. And the scheduler is pluggable. A cluster can run more than one scheduler, or replace the default with a custom one. Most clusters do not.
+
+This notebook is about the inputs that bias the scheduler's decision — how much you ask for, where you say you will fit, where you say you will not fit, and where you say "spread out."
+
+Resource requests and limits.
+
+Every container can declare what it expects from the node. Two fields, both optional, both per-container. Requests, with see-pee-you and memory. And limits, with see-pee-you and memory.
+
+What requests means. The minimum amount of resource the scheduler must reserve on the chosen node. When the scheduler filters nodes, it sums the requests of every pod already on the node and subtracts that from the node's allocatable capacity. A pod can only land on a node if its requests fit in the remaining headroom. Requests is not a runtime cap. A container with see-pee-you requests of two-fifty milli-cores can use more see-pee-you at runtime if the node has it free. Requests is a scheduling input.
+
+What limits means. The maximum amount of resource the runtime will let the container actually use. Enforced by the kernel see group. See-pee-you limit — the container is throttled if it tries to use more. No restart, just slow. Memory limit — if the container tries to allocate above the limit, the kernel oh-oh-em-kills the offending process. The container restarts, subject to restart policy.
+
+Units. See-pee-you — one means one whole see-pee-you core, or one hyperthread really. Five hundred milli-cores means half of one core. Sub-milli-core is not allowed. Fractional decimals like zero point five are accepted and equivalent to five hundred milli-cores. Memory — default unit is bytes. Use binary suffixes — kibibyte, mebibyte, gibibyte, tebibyte — powers of ten twenty-four. Decimal suffixes — kilo, mega, giga, tera, powers of one thousand — also work but are unusual.
+
+What if you omit them. Requests omitted, limits set — requests defaults to limits. You get a "guaranteed" pod, see below. Requests set, limits omitted — no upper bound. Can hog the node. Both omitted — the pod schedules onto any node with any free capacity, then runs unbounded. Dangerous in shared clusters. Fixed by limit range, covered shortly.
+
+Ephemeral storage. Ephemeral storage is a third resource type — the node's local writable scratch, including empty dir, the container writable layer, and logs. Set requests and limits on it the same way. The kube-let evicts pods that exceed.
+
+Quality-of-service classes — guaranteed, burstable, best effort.
+
+Kubernetes assigns each pod a quality-of-service class based on its resource settings. You do not set the class directly. The ay-pee-eye server computes it. The class matters when the node runs low on memory and has to evict.
+
+Guaranteed — every container has requests and limits set for both see-pee-you and memory, with requests equal to limits for each. Burstable — at least one container has a request or limit set, but the pod does not meet the guaranteed criteria. The eighty percent case. Best effort — no container in the pod has any requests or limits set at all.
+
+Eviction order under memory pressure. When the kube-let detects memory pressure — free memory below thresholds — it evicts pods in this order. Best effort pods first. Burstable pods next, prioritising those using memory above their requests. Guaranteed pods last, only if there is literally no other choice. So the cheapest insurance against eviction is to set requests equal to limits on memory. That pod is now guaranteed, and the kube-let will not touch it under normal memory pressure.
+
+Oh-oh-em-killed versus evicted. Two distinct kill mechanisms — keep them straight. Oh-oh-em-killed — a single container exceeded its memory limit. The kernel kills the offending process. Surfaces as oh-oh-em-killed in the container's last state, with a non-zero restart count. Evicted — the whole pod is removed because the node is under pressure. The pod's phase becomes failed with reason evicted. The pod's controller, like a deployment, creates a replacement somewhere else.
+
+Kubectl describe pod shows you which one happened in its events. The fix is different for each. Oh-oh-em-killed means "raise the limit or fix the leak." Evicted means "set requests, pick a less-loaded node, or scale up the cluster."
+
+Limit range and resource quota — namespace governance.
+
+Once you have more than one team sharing a cluster, you do not want a pod with best effort, no limits, hogging a whole node. Or a log-level-debug test accidentally requesting one hundred see-pee-you cores. Two cluster-admin objects govern that.
+
+Limit range — defaults and per-object caps. A limit range is namespace-scoped. It does two things. Defaults — when a pod is created without requests or limits, the ay-pee-eye server fills them in. Caps — rejects pods whose values are outside an allowed range. Each entry has a type, like container, then optionally default for missing limits, default request for missing requests, max for the upper cap, and min for the lower bound.
+
+After applying that, every container created in the namespace without limits gets the default. Containers asking for more than the max are rejected at creation.
+
+Resource quota — namespace totals. A resource quota is also namespace-scoped. It caps the sum of requests, limits, and object counts across the whole namespace. You can cap requests dot see-pee-you, requests dot memory, limits dot see-pee-you, limits dot memory, the number of pods, the number of persistent volume claims, and more.
+
+Once the namespace hits its cap on see-pee-you requests, the next pod that would push it over is rejected at creation. Kubectl describe quota with the namespace shows used versus hard.
+
+The see-kay-ay tests that you can write both of these and understand the difference. Limit range shapes individual objects. Resource quota caps the namespace total.
+
+Node selector — the simplest pin.
+
+A node selector is a map of labels that must all match a node's labels for the pod to be schedulable there. For example, disk type equals ess-ess-dee and gee-pee-you equals true. That pod will only schedule on a node that has both labels.
+
+Node labels come from two places. Set by the admin with kubectl label node, followed by the node name and the key equals value pair. And automatic — the kube-let sets a few labels on its own node when it registers. Kubernetes dot eye-o slash hostname. Kubernetes dot eye-o slash o-s. Kubernetes dot eye-o slash arch. Topology dot kubernetes dot eye-o slash zone. Topology dot kubernetes dot eye-o slash region. You can rely on these.
+
+When node selector is the right tool. When the rule is "this pod needs a node that has x." It is a hard requirement, plain equality, no alternatives. For anything more expressive — set-based selectors, preferred-but-not-required, "anti-x" — reach for node affinity below.
+
+Node name — the bigger hammer. If you put spec dot node name with a literal node value on a pod, it bypasses the scheduler entirely. The kube-let on that node either runs it, if it can, or rejects it. Use for static-pod-like cases. Almost never in normal manifests.
+
+Node affinity — richer placement against node labels.
+
+Node affinity is the grown-up version of node selector. Two flavours. Required during scheduling, ignored during execution — a hard requirement, like node selector but with the full set-based selector language. The pod will not schedule unless it matches. And preferred during scheduling, ignored during execution — a soft preference, weighted. The scheduler tries to honour it but will pick a non-matching node if necessary.
+
+A typical manifest combines both. Required says the pod must land in zones us east one a or one b, and on a node with a gee-pee-you label of any value. Preferred says try to pick an em-five extra-large instance if available, with a weight of fifty.
+
+Operators. The selector language is the set-based syntax from notebook two. In, not in, exists, does not exist, greater than, and less than. The last two work on integer-string labels. Greater than and less than are the only piece beyond what plain labels can do.
+
+The "ignored during execution" suffix. The current ay-pee-eye only supports the ignored during execution half. Once a pod is placed, the affinity is not re-checked at runtime. A future required during execution would evict pods when the node's labels change to no longer match. It does not exist yet, but the field name leaves room for it.
+
+When to use which. Single equality match, one rule — node selector. Multi-condition, set-based, or exists — node affinity required. Try but do not refuse to schedule — node affinity preferred.
+
+Pod affinity and anti-affinity — placement relative to other pods.
+
+Node selector and node affinity match against node labels. Pod affinity matches against other pods' labels — the rule becomes "schedule me near, or away from, pods like this."
+
+A typical pod anti-affinity says — do not schedule me onto a node that already has a pod with app equals web. For a deployment with three replicas and this anti-affinity, the result is one pod per node — the canonical way to spread replicas across hostnames.
+
+The topology key is the whole game. Topology key names a node label that defines a topology domain. The most common values. Kubernetes dot eye-o slash hostname — each node is its own domain. "Spread across hostnames." Topology dot kubernetes dot eye-o slash zone — each availability zone is one domain. "Spread across zones." Topology dot kubernetes dot eye-o slash region — region-level spreading. Multi-region clusters.
+
+Pod affinity says "schedule me in the same topology domain as a matching pod." Pod anti-affinity says "schedule me in a different topology domain from a matching pod."
+
+Required versus preferred — same idea as node affinity. Both pod affinity and pod anti-affinity come in required and preferred flavours. Prefer the preferred kind for spreading replicas. Required anti-affinity with topology key hostname, and three replicas on a two-node cluster, leaves one pod pending forever.
+
+When to use it. Real cases. Spread replicas of a deployment across nodes — pod anti-affinity, topology key hostname, match own labels. Co-locate cache with app — pod affinity, schedule the cache pod onto a node that already has a matching app pod. Do not put two databases on the same node — pod anti-affinity between database pods. Topology spread constraints, later in this notebook, often do the same job more concisely.
+
+Taints and tolerations — the node-side "go away."
+
+Node selector and node affinity are pod-side — "I want this kind of node." Taints are node-side — "stay away unless you have explicitly opted in." Together, they let cluster admins reserve nodes for specific workloads.
+
+Tainting a node. Use kubectl taint nodes, the node name, then the key equals value colon effect expression. The three effects. No schedule — new pods that do not tolerate this taint will not schedule here. Existing pods stay. Prefer no schedule — same idea, soft. The scheduler tries to avoid, but will not refuse. No execute — new pods that do not tolerate will not schedule, and existing pods that do not tolerate are evicted. Use sparingly.
+
+Tolerating on the pod side. Each toleration has a key, an operator, an optional value, and an effect. A toleration unlocks the matching taint — the pod is now eligible to schedule on the tainted node. It does not force it there. Tolerations and affinity work together. Tolerate the taint, and use node selector or node affinity to actually steer the pod onto that node.
+
+Operator exists matches the key regardless of value, with the value field omitted. Operator equal — the default — matches both key and value.
+
+Built-in taints — what the system uses on its own. Kubernetes itself uses taints for several lifecycle conditions. The kube-let automatically adds them. Node dot kubernetes dot eye-o slash not ready — when the node's ready condition is false. Slash unreachable — when the node controller cannot reach the node. Slash memory pressure — out of memory. Slash disk pressure — out of disk. Slash unschedulable — when the node is cordoned. And node role dot kubernetes dot eye-o slash control plane with no schedule — the control-plane taint on managed master nodes.
+
+Every regular pod implicitly tolerates not ready and unreachable for three hundred seconds, so a brief blip does not immediately evict. Set toleration seconds to change that window — critical for system pods that should stay even when nodes flap.
+
+Removing a taint. Use kubectl taint nodes with the same key, value, and effect, then append a minus sign at the end. That removes it.
+
+The see-kay-ay expects you to be quick with both kubectl taint and writing tolerations by hand.
+
+Eviction — what happens when nodes get squeezed.
+
+We have touched eviction in passing. Pulling it together.
+
+Node-pressure eviction. The kube-let monitors eviction signals — memory available, root filesystem available, image filesystem available, and inode count — against configured thresholds. It evicts pods to relieve the pressure. The order. Best effort pods first. Burstable pods exceeding their requests, sorted by how much they are over. Guaranteed pods only as a last resort. Within each tier, the kube-let picks pods that are using the most of the pressed resource.
+
+Ay-pee-eye-initiated eviction. Two patterns. Kubectl drain, with the node name, gracefully evicts every non-daemon-set pod off a node. Used before maintenance. Internally calls the eviction ay-pee-eye, which respects pod disruption budget. Kubectl delete pod is not an eviction. It is just a direct delete. Does not respect pod disruption budgets.
+
+Pod disruption budget — guard against eviction. A pod disruption budget, abbreviated p-d-b, caps how many pods of a workload can be voluntarily disrupted at once. The drain operation respects it. A budget specifies either min available or max unavailable, and a selector matching pod labels — typically via a deployment's labels. The eviction ay-pee-eye refuses to evict pods if doing so would drop the available count below min available, or above max unavailable.
+
+Pod disruption budgets only constrain voluntary disruptions — drain, autoscaling, controlled rollouts. They do not help against node hardware failure, which is involuntary disruption.
+
+The big picture. Set requests so the scheduler does not oversubscribe nodes. Set limits so one runaway container cannot take down its neighbours. Set guaranteed quality of service on truly critical pods. Define pod disruption budgets for anything you do not want drained mid-night.
+
+Topology spread constraints — even distribution as a first-class field.
+
+Pod anti-affinity can spread replicas across hostnames or zones, but at scale it gets hard to read and the scheduler can struggle. Topology spread constraints are a more direct way to say "spread evenly across this topology, with this much slack."
+
+Each constraint has a max skew, a topology key, a when-unsatisfiable behaviour, and a label selector. Max skew is the maximum allowed imbalance — the count of matching pods in any one topology domain can differ from the count in any other by at most this number. One is the tightest, most-common setting.
+
+When unsatisfiable is the equivalent of "required versus preferred." Do not schedule — if the constraint cannot be honoured, the pod stays pending. Schedule anyway — if it cannot be honoured, schedule anywhere, just prefer balanced placement.
+
+Default constraints. The cluster's scheduling profile, set by the kube scheduler config, may ship default topology constraints. Typical defaults spread across hostname and zone with when unsatisfiable schedule anyway. That is why managed clusters often spread replicas across zones for free.
+
+When to use spread versus anti-affinity. For "spread replicas evenly" — use topology spread constraints. They scale better and read more clearly. For "do not co-locate me with a different workload" — use pod anti-affinity, since spread constraints only know about one label selector.
+
+Priority class and preemption — when high-priority pods kick others out.
+
+By default, a pending pod waits politely until capacity is available. Priority class lets you tag a workload as "important enough that lower-priority pods should be kicked out to make room."
+
+A priority class is a cluster-scoped object with a name and a value — an integer priority. Higher number, higher priority. You also set a description and a preemption policy, which is either preempt lower priority, the default, or never. A pod opts in by setting spec dot priority class name to the class name.
+
+When a pending pod with high priority cannot find a node, the scheduler checks — is there a node where evicting some lower-priority pods would make this one fit? If so, it evicts them and schedules the high-priority pod. The evicted pods go back to pending and are rescheduled, if their controller wants them.
+
+Built-in priority classes. Two ship with every cluster. System cluster critical, with priority two billion, for cluster-wide critical workloads like core-d-en-ess and metrics server. System node critical, with priority two billion plus one thousand, for node-critical workloads like kube proxy and container network interface agents. Do not use those values for application workloads. Define your own much lower — for example, one thousand for "elevated" and one hundred for "background."
+
+Preemption policy never. A pod with this policy still respects its priority for queue order — the scheduler considers higher-priority pending pods first — but it will not preempt others. Useful for batch work that should run when capacity exists but should not kick interactive workloads.
+
+How the scheduler decides — filter, score, profiles.
+
+We started the notebook with the scheduler's loop — filter, score, bind. Now the detail.
+
+Filter, also called predicates. A series of filter plugins each return yes or no for each node. A node has to pass all filters to be a candidate. The standard set. Node resources fit — the pod's requests fit in the node's available capacity. Node affinity — node selector and node affinity required are satisfied. Node ports — host-network pods do not conflict with existing host ports. Pod topology spread — spread constraints are honoured. Taint toleration — no schedule and no execute taints are tolerated. Volume binding — bound volumes are available in the node's zone.
+
+Score, also called priorities. A series of score plugins assign zero to one hundred to each surviving node. The scheduler sums weighted scores. Highest wins. The standard set. Node resources balanced allocation — prefer nodes whose see-pee-you and memory utilisation are balanced. Node resources fit in score mode — either least allocated, the default, which packs lightly, or most allocated, which bin-packs. Inter-pod affinity and node affinity, the preferred parts — soft affinity preferences. Image locality — prefer nodes that already have the image cached. And taint toleration in score mode — prefer nodes with fewer prefer-no-schedule taints.
+
+Scheduling profiles. A cluster's kube scheduler runs one or more profiles — named configurations of which plugins are enabled and weighted how. The default profile is default scheduler. You can enable a non-default profile on a particular pod with spec dot scheduler name. Or run multiple schedulers in the same cluster, each watching for pods whose scheduler name matches.
+
+You will not write a scheduler profile in the see-kay-ay. You should know the field exists and that "the scheduler" is not a single monolith.
+
+Cleaning up.
+
+Delete everything this notebook created so the cluster is tidy for notebook eight. Run kubectl delete pod sized, pinned, and tolerated. Kubectl delete deployment spread. Remove the labels and taints we added — capture the node name with a shell expansion, then kubectl label node, the node, disk type with a trailing dash to remove the label. And kubectl taint nodes, the node, workload equals special colon no schedule with a trailing dash to remove the taint. Or, more broadly, kubectl delete pod, comma, deployment, dash dash all.

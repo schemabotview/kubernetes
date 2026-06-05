@@ -1,0 +1,173 @@
+Getting started with kubernetes.
+
+What is covered. This notebook walks through what kubernetes actually is — a system that schedules containers across a fleet of machines and keeps them running the way you said they should. The orchestration problem — what docker alone gives you and what it does not. The cluster at thirty thousand feet — the control plane, the worker nodes, and how they talk to each other. The pod — kubernetes' smallest deployable unit, and why it is not "a container." Why kubernetes matters in the world today, and where it runs in production. Getting a local cluster, walking through kind, minikube, docker desktop, and a kube-ay-dee-m virtual machine lab, with a recommendation for which path to pick. Your first pod, by running kubectl run, and what actually happened. The kubectl architecture — the client, the ay-pee-eye server, and the declarative model. The anatomy of a kubectl command, using the verb then resource then name then flags syntax. The core pod lifecycle — get, describe, logs, exec, and delete. Imperative versus declarative — kubectl run versus a yaml manifest applied with kubectl apply. And getting help when you forget.
+
+By the end of this notebook you should be able to bring up a local cluster, run your first pod, inspect it, read its logs, exec into it, delete it, and know what each of those words actually means. We assume you are comfortable with docker — images, containers, volumes, and the docker run command — and with a linux shell. We assume nothing about pods, nodes, controllers, or the control plane.
+
+What is kubernetes.
+
+If you ask ten people what kubernetes is, you will get ten slightly different answers. The cleanest one-line definition is — kubernetes is a system that runs containers across a fleet of machines for you, restarts them when they die, replaces them when a machine dies, and gives them a stable way to find each other. That sentence does a lot of work. Let us pick it apart.
+
+A fleet of machines. Kubernetes assumes you have more than one server. They might be physical, virtual, on-premises, or in the cloud. It does not care. Each machine is called a node. One small group of nodes runs kubernetes itself, called the control plane, and the rest run your containers, called worker nodes.
+
+Runs containers for you. You do not tell kubernetes to start this container on that server. You tell it that you want three copies of this image running somewhere in the cluster, and kubernetes figures out where. That decision — which container goes on which node — is called scheduling.
+
+Restarts them when they die. If a container crashes, kubernetes notices and starts a new one. If a machine dies, kubernetes notices, marks the containers on it as lost, and starts replacements on the surviving nodes. You declare the desired state, and kubernetes works to maintain it.
+
+Stable way to find each other. Containers come and go. Their eye-pee addresses change every time. Kubernetes gives you a service — a stable name and stable eye-pee — that always points at whichever containers are currently alive for a given workload. You talk to the service, and kubernetes does the dee-en-ess and routing.
+
+The name kubernetes is greek for "helmsman" — the person steering the ship. The k-eight-s abbreviation is just k, then eight letters, then s. It is also commonly called kube. All three mean the same thing.
+
+The orchestration problem.
+
+You finished the docker repo, so you can already do a lot. You can build images, run containers, mount volumes, wire up networks, and bring up a small stack with docker compose. So what is missing.
+
+The honest answer is — as soon as you have more than one machine and more than one application, you run into a cluster of problems that docker alone was not designed to solve.
+
+Placement. You have five nodes and twenty containers to run. Which container goes on which node. You probably want see-pee-you hungry workloads spread out, and small workloads packed tightly. Doing that by hand is a full-time job. Kubernetes' scheduler does it automatically.
+
+Self-healing. A container crashes at three in the morning. With docker alone, it stays crashed until someone notices. Kubernetes notices in seconds and starts a replacement. If a node dies, kubernetes redistributes its containers to the survivors.
+
+Scaling. You launched two replicas of your ay-pee-eye, traffic doubles, and you need ten. Doing that with docker run means ess-ess-h-ing into machines, picking the right ones, running commands. Kubernetes scales by changing one number — ten replicas — and the cluster converges.
+
+Rollouts and rollbacks. Shipping version two of your service should not mean stop all of v one, then start all of v two. Kubernetes does rolling updates — start a v two, wait until it is healthy, stop a v one, repeat. If v two misbehaves, one command rolls everything back.
+
+Service discovery. Container ay-pee-eye seven-f-nine-c and container ay-pee-eye ay-ay-three-one are both your ay-pee-eye. When the web container wants to call the ay-pee-eye, it should not have to know which specific containers exist right now. Kubernetes gives every workload a stable service name like ay-pee-eye. Cluster dee-en-ess does the rest.
+
+Configuration and secrets. Twenty services need the same database u-r-l. One of them needs a tee-el-ess certificate. With docker alone you wire environment variables and mount files by hand. Kubernetes has first-class config maps and secrets that pods reference declaratively.
+
+Docker still does the actual container work. Kubernetes is what you put on top of docker — or, more precisely, on top of a container runtime, a distinction we will get to in notebook eight — once you have more containers than you can supervise personally.
+
+The cluster at thirty thousand feet.
+
+A kubernetes cluster is split into two kinds of machines — the control plane and the worker nodes. They each run a specific set of programs, talk to each other over the network, and together form one logical cluster.
+
+Picture this. On the left, the control plane. Inside it sits et-see-dee, a distributed key-value store that holds every object in the cluster. In front of et-see-dee sits the ay-pee-eye server. Everything reads and writes cluster state through the ay-pee-eye server. Also on the control plane are the scheduler, which decides which node a new pod lands on, and the controller manager, which runs the background loops that reconcile reality to desired state. On the right, every worker node runs the kube-let, which receives instructions from the ay-pee-eye server and tells the local container runtime — usually container-d — to actually run pods. Each worker node also runs kube proxy, which implements the network plumbing that makes services work.
+
+Don't try to memorise the boxes yet. The shape to take away.
+
+Et-see-dee is the cluster's source of truth. Every object you create in kubernetes ends up as a row in et-see-dee. The kube ay-pee-eye server is the front door — everything that wants to read or change cluster state goes through it. Nothing talks to et-see-dee directly except the ay-pee-eye server. The kube scheduler decides which node a new pod should land on. The kube controller manager runs the little background loops that watch the world and make it match desired state. The kube-let runs on every worker node — it talks to the ay-pee-eye server, gets told you need to run these pods, and tells the local container runtime to make it happen. Kube proxy also runs on every node and implements the network plumbing that makes services work. And the container runtime is what actually executes containers on the node — usually container-d, the same thing you met in the docker repo. The container runtime interface, often abbreviated as see-are-eye, is what the kube-let uses to talk to it.
+
+We will open up each of these properly in notebook eight. For now, just know — the control plane decides, and the nodes execute.
+
+The pod — kubernetes' smallest unit.
+
+Here is the first thing that surprises people coming from docker. Kubernetes' smallest deployable thing is not a container. It is a pod.
+
+A pod is one or more containers that share a network and a storage scope, scheduled together onto the same node, and treated as a single unit by kubernetes.
+
+For ninety-five percent of pods, there is exactly one container inside. So most of the time, pod and container feel interchangeable. But the abstraction matters because of the other five percent.
+
+Shared network. All containers in a pod share an eye-pee address and a port space. They can talk to each other on local-host. From outside, the pod has one eye-pee — you cannot tell the difference between its containers from across the network.
+
+Shared storage scope. Volumes are declared on the pod and mounted into whichever containers need them. So a sidecar container can write to the same directory the main container reads from.
+
+Same node, same lifecycle. A pod is scheduled atomically onto one node. All its containers start there, live there, and die there together. If the pod is restarted, all its containers restart.
+
+Why bother. The pod abstraction exists for helper containers — patterns like sidecars, init containers, and adapter or ambassador containers. A sidecar is a small companion container that adds a capability, like log shipping or a service mesh proxy. An init container is a run-once container that prepares the pod before the main container starts — for example, fetching a config file or waiting for a database to be ready. Adapter and ambassador are older names for sidecars that translate or proxy traffic in or out.
+
+If you only have one container, the pod is a thin wrapper. If you have a main process plus one or two helpers that must live on the same machine and share a filesystem with it, the pod is the right unit.
+
+In this notebook and the next, every pod we run will have exactly one container, to keep the noise down. Multi-container patterns show up properly from notebook three onwards.
+
+Why kubernetes matters.
+
+Containers in production today mostly mean kubernetes in production. Here is where it runs.
+
+The big three managed offerings. Elastic kubernetes service on ay-double-you-ess, google kubernetes engine on google cloud, and azure kubernetes service on azure. All three give you a cluster with the control plane managed for you — you bring the workloads. Tens of thousands of companies run on these.
+
+On-premises and edge. Openshift, which is red hat's distribution. Rancher. Vanilla kube-ay-dee-m clusters. Banks, telcos, and anything regulated tend to live here.
+
+Developer laptops. Kind, minikube, and docker desktop's bundled kubernetes. The cluster you will spin up later in this notebook.
+
+Continuous integration and delivery. Tekton, argo workflows, and jenkins x are all kubernetes-native continuous integration systems. Github actions self-hosted runners often run as pods.
+
+The platform layer. Many internal developer platforms — back-stage, spotify-style portals, heroku-style platform-as-a-service — are built on top of kubernetes underneath.
+
+Two facts to absorb. Kubernetes is the default. When a company says they run on the cloud in twenty twenty-six, the next sentence is usually "on kubernetes." Skipping it is increasingly rare. And the see-kay-ay is the certification. The certified kubernetes administrator exam, run by the linux foundation and the cloud native computing foundation, is the most widely recognised credential. This course is structured to take you from zero through to ready-to-sit. By notebook ten you will have hands-on familiarity with every domain the exam tests — install, configuration, workloads, services, networking, storage, security, and troubleshooting.
+
+Getting a local cluster.
+
+You only learn kubernetes by running pods. You need a cluster. Four good options, ordered roughly by simplicity.
+
+Option one — kind, which stands for kubernetes in docker. A single binary that spins up a fresh cluster by running each kubernetes node as a docker container. Boots in under a minute, single-node by default but supports multi-node, easy to reset. The pros are it is the fastest start, multi-node works, it is easy to script, and it is used heavily in continuous integration. The cons are that nodes are docker containers, not virtual machines — fine for learning, slightly different from real installs.
+
+Option two — minikube. The veteran tool. Runs a single-node cluster inside a virtual machine, a docker container, or your local container runtime. Has add-ons that bundle things you would otherwise install yourself, such as ingress. The pros are it is very forgiving and has batteries-included add-ons. The cons are it is slower to boot than kind, and it is single-node by default.
+
+Option three — docker desktop's bundled kubernetes. If you have already got docker desktop, there is a checkbox in settings labelled "enable kubernetes." Tick it and wait a few minutes. The pros are zero new installs if you have docker desktop already. The cons are that it is not always the latest kubernetes version, and restart-to-reset is heavyweight.
+
+Option four — kube-ay-dee-m on virtual machines. The real install. Bring up three or more linux virtual machines, install the kube-let, kube-ay-dee-m, and kubectl on each, run kube-ay-dee-m init on one, and kube-ay-dee-m join on the others. We do this end-to-end in notebook eight. The pros are it matches production exactly. The see-kay-ay exam expects this. The cons are it is the heaviest setup and not where you want to start on day one.
+
+For this notebook and chapters two through seven, use kind. It is the lightest path to a working cluster. We will bring up a kube-ay-dee-m lab in notebook eight when we need to see real control-plane components.
+
+Installing kubectl. Whichever cluster option you pick, you also need kubectl — the command-line client that talks to the cluster. Kind and minikube will set it up for you on first run, but the explicit install is brew install kubectl on mac o-s, or downloading the binary from the kubernetes release page on linux.
+
+Verify the cluster. Three commands tell you the cluster is healthy. Kubectl version shows the client and server versions — if you see both, kubectl can reach the ay-pee-eye server. Kubectl cluster info prints the u-r-l of the ay-pee-eye server and a few add-on endpoints. And kubectl get nodes lists the nodes — with kind you will see one named learn control plane.
+
+Your first pod.
+
+The kubernetes equivalent of hello world is — kubectl run hello, with the image flag set to n-ginx tag alpine.
+
+That single command does a surprising amount. Let us walk the sequence under the hood.
+
+First, kubectl parses the command and builds a pod object in memory — a small j-son document that says "I want a pod named hello whose only container is n-ginx tag alpine." Second, kubectl sends that object to the ay-pee-eye server as an h-t-t-p post. Third, the ay-pee-eye server validates the object and writes it to et-see-dee. Fourth, the scheduler notices that there is a pod in et-see-dee with no node assigned. It picks a node — we only have one in kind — and writes that decision back through the ay-pee-eye server. Fifth, the kube-let on the chosen node sees that it has a new pod to run. It tells the container runtime to pull the n-ginx tag alpine image and start a container. Sixth, the container starts. The kube-let updates the pod's status from pending, to container creating, to running, and that status flows back to et-see-dee. And finally, when you run kubectl get pods, you read the latest status from the ay-pee-eye server.
+
+You did the work of step one and step two. Everything else happened on its own.
+
+Notice what kubectl run did not do. It did not connect to a server and ess-ess-h launch a container. It wrote an object to a database and went home. The rest is a controller somewhere watching that database and reacting. This is the heart of kubernetes — declarative state plus controllers that reconcile reality to it. You will see this same pattern with every other object in this course.
+
+How kubectl actually works.
+
+When you typed kubectl run hello with the n-ginx tag alpine image, you used the kubectl client — a single binary on your laptop. But kubectl did not run the pod itself. It built an object and sent it to the ay-pee-eye server.
+
+Picture three boxes in a line. On the left is kubectl in your terminal. It reads tilde slash dot kube slash config to find the ay-pee-eye server u-r-l and your credentials. In the middle is the kube ay-pee-eye server. It authenticates you, authorises what you are trying to do, validates the object, and writes it to et-see-dee. On the right is et-see-dee itself, the cluster state store.
+
+A few things to lock in. Kubectl is stateless. It reads tilde slash dot kube slash config to find the ay-pee-eye server u-r-l and credentials, then makes h-t-t-p-s calls. Anyone with that file can drive the cluster. Every component talks to the ay-pee-eye server — the scheduler, the kube-let, the controllers, even kubectl. None of them talk to et-see-dee directly. The ay-pee-eye server is the only writer. Authentication and authorisation happen at the ay-pee-eye server. Who you are is figured out from the credential in your kube config. What you are allowed to do is decided by are-back, which is covered in notebook ten. And the watch model. Components like the scheduler and the kube-let do not poll the ay-pee-eye server. They open a streaming watch — "tell me whenever a pod object changes" — and react. That is how the cluster stays responsive without hammering the ay-pee-eye.
+
+Why does this matter. Two reasons. First, when something goes wrong, the question is almost always "what does the ay-pee-eye server think the state is?" and "what does the node actually think the state is?" Bridging those two views is the troubleshooting flow. Second, the ay-pee-eye-centric design means everything in kubernetes is just an object you create, read, update, or delete — pods, services, config maps, secrets, even nodes themselves. Learn one ay-pee-eye, learn them all.
+
+Anatomy of a kubectl command.
+
+Most kubectl commands follow the same shape. Kubectl, then a verb — like get, describe, create, apply, delete, logs, exec, or edit — then a resource — like pods, deployments, services, or nodes — then optionally a specific name, then any flags. Common flags include the namespace flag dash n, the output format flag dash o, and the label selector dash l.
+
+Some examples. Kubectl get pods lists all pods in the current namespace. Kubectl get pod hello shows one pod. Kubectl describe pod hello gives verbose details and recent events for that pod. Kubectl logs hello shows standard output and standard error of the pod's container. Kubectl exec dash i-t hello double-dash s-h opens a shell inside the pod. Kubectl delete pod hello deletes the pod. Kubectl get nodes lists nodes. And kubectl get all dash n kube system lists common resource kinds in the kube system namespace.
+
+A few conventions worth memorising now. Resource names are pluralisable — pod, pods, and p-o all mean the same thing. Deployment, deployments, deploy. Most kinds have a short alias of two to four letters. Kubectl ay-pee-eye resources lists them. The namespace flag — pods live in namespaces. The default namespace is called default. Use dash n followed by the namespace to target a different one. Dash capital-a, or dash dash all namespaces, means across all namespaces for get-style commands. Output format — append dash o wide for extra columns, dash o yaml for the full object, dash o j-son for j-son, and dash o j-son path equals a path for a single field. That last one is critical for the exam. And aliases — many people alias kubectl to just k in their shell. We will write kubectl in full throughout these notebooks to keep things explicit.
+
+The core pod lifecycle.
+
+A pod moves through a small set of phases. Picture this. When you run kubectl run or kubectl apply, the pod enters the pending phase — scheduled, image pulling, init containers running. From pending it moves to running, which means at least one container is up. From running it can finish in two ways — succeeded, meaning every container exited with code zero, or failed, meaning at least one container exited with a non-zero code. There is also a fifth phase called unknown, which appears when the node has lost contact with the ay-pee-eye server.
+
+The everyday commands for living with a pod. Kubectl get pods lists pods in the current namespace. Add dash w to watch live, dash o wide for the node and eye-pee, and dash capital-a for all namespaces. Kubectl describe pod name gives verbose details — events, image, eye-pee, conditions, and the last reason for any container restart. It is the single most useful "why is my pod sad" command. Kubectl logs name shows standard output and standard error of the pod's main container. Add dash f to follow like tail dash f, or dash dash previous for the previous container instance after a crash. Kubectl exec dash i-t name double-dash command runs a command inside the pod's container. The double dash separates kubectl flags from the command you want to run. So kubectl exec dash i-t hello double-dash s-h opens an interactive shell. Kubectl port forward name local port colon pod port tunnels a local port to a port on the pod. Handy for poking at services that are not exposed yet. And kubectl delete pod name deletes the pod. With a bare pod that is not managed by a controller, it stays gone. With a pod owned by a deployment or daemon set, a replacement appears within seconds — because the controller is busy reconciling desired state.
+
+Pods can be referred to by name in the current namespace, or fully qualified as namespace slash name in some contexts. Most commands also accept label selectors, like dash l app equals web, to operate on every pod matching a label. Labels show up properly in notebook two.
+
+Imperative versus declarative.
+
+Kubectl run hello with the n-ginx tag alpine image is an imperative command. You say what to do right now. It is fast for learning and ad-hoc tasks, and it is accepted on the exam under time pressure. But it is not how real systems are managed.
+
+The grown-up way is declarative. You write a yaml file that describes the object you want, then ask kubernetes to make reality match. The yaml has four top-level sections — ay-pee-eye version, kind, metadata, and spec. The metadata section holds the pod's name and labels. The spec section holds the list of containers — each container has a name, an image, and any ports it exposes. You apply the file with kubectl apply dash f followed by the filename.
+
+Why declarative wins for anything non-throwaway. It is version-controllable — yaml files live in git, so you can diff, review, and roll back. It is idempotent — run kubectl apply on the same file ten times in a row, and you get one pod. Kubectl run would error on the second attempt. It is composable — a directory of yaml files describes a whole environment. Kubectl apply dash f on a directory brings it all up. And it is reusable — tools like helm and customise template these files for multiple environments.
+
+The bridge between the two worlds — and a trick worth memorising for the see-kay-ay exam — is to generate yaml from an imperative command. Run kubectl run hello with the image flag, then add dash dash dry run equals client and dash o yaml, and redirect the output to a file. The client dry run flag means "do not actually send this to the cluster, just build the object." Then dash o yaml prints it. You get a working manifest in one shot, which you can edit and apply. Most see-kay-ay candidates write their yaml this way. It is faster than typing it from scratch and harder to typo.
+
+Notebook two goes deep on the yaml structure — ay-pee-eye version, kind, metadata, and spec. This is your first look at it.
+
+Getting help.
+
+You will not memorise every flag of every command, or every field of every object. You do not need to.
+
+Kubectl dash dash help is the top-level command list. Kubectl verb dash dash help shows flags for a specific verb — for example kubectl get dash dash help, kubectl run dash dash help, or kubectl apply dash dash help. Kubectl explain resource describes the fields of an object kind. Pair it with a dotted path to dig in. Kubectl explain pod shows top-level fields. Kubectl explain pod dot spec shows the spec. Kubectl explain pod dot spec dot containers shows the container fields. This is the on-disk version of the ay-pee-eye reference and works offline. And kubectl ay-pee-eye resources lists every resource kind the cluster knows about, with its short name, ay-pee-eye group, and whether it is namespaced.
+
+For deeper docs. Kubernetes dot eye-o slash docs is the canonical reference. The concepts and tasks sections are excellent. The see-kay-ay curriculum is published by the cloud native computing foundation and lists exactly which docs pages are allowed during the exam — anything under kubernetes dot eye-o slash docs is fair game. And man kubectl on linux installs.
+
+The flow when you are stuck. Try kubectl explain on the thing first, to learn what fields it has. Then kubectl verb dash dash help to learn what flags that command takes. Then the docs site for tutorials and conceptual explanations.
+
+Cleaning up.
+
+A few hours into kubernetes and you will have stray pods, leftover deployments, and orphaned config maps scattered around. Two ways to clean. Targeted — kubectl delete pod name for one pod, kubectl delete dash f file dot yaml to delete whatever a file describes, or kubectl delete kind name for any other kind. Or bulk — kubectl delete kind dash dash all deletes every object of that kind in the current namespace. Kubectl delete all dash dash all dash n namespace wipes every common kind in a namespace. Take care — these are namespaced and they really do delete.
+
+For the cluster itself, when you are done for the day, run kind delete cluster dash dash name learn, which wipes the kind cluster entirely. Or, if you used minikube, run minikube delete.
+
+The whole cluster comes down in seconds. That throwaway-ness is the point of using kind for learning — break it, delete it, recreate it, no consequences.

@@ -1,0 +1,143 @@
+Services, dee-en-ess, and service discovery.
+
+What is covered. This notebook walks through why services exist — pods come and go, their eye-pee addresses change, and clients cannot keep up. The service abstraction — a stable name plus a virtual eye-pee, backed by a label selector that resolves to whichever pods match right now. The three port numbers in a service spec — port, target port, and node port — and which is which. Endpoints and endpoint slices — the actual list of pod eye-pees behind a service, maintained by a controller. Service types — cluster eye-pee, node port, load balancer, and external name, and when each one fits. Kube proxy — how service eye-pees actually route to pods on every node, using ip tables, eye-pee-v-s, or n-f tables. Cluster dee-en-ess — core-d-en-ess, the dot s-v-c dot cluster dot local name pattern, and how pods resolve it. Headless services — no virtual eye-pee, with dee-en-ess returning pod eye-pees directly. The building block under stateful sets. Session affinity — client eye-pee for sticky routing. Multi-port services — naming ports so manifests stay readable. And a glance at service versus ingress, which we cover properly in notebook nine.
+
+By the end of this notebook you should be able to expose a deployment, reach it from another pod by dee-en-ess, pick the right service type for each problem, and explain what kube proxy and core-d-en-ess are doing under the hood. Notebook three is the prerequisite — you should have a deployment manifest in your head, because every service in real life sits in front of one.
+
+Why services exist.
+
+You finished notebook three with a deployment running three n-ginx pods. Each pod got its own eye-pee. Pods come, pods go. Every restart, every rollout, every scale event mints new eye-pees.
+
+Now you want a web pod to call your ay-pee-eye. The web pod cannot hardcode pod eye-pees — they change every rollout. It cannot discover ay-pee-eye pods by listing all pods — that would mean watching the ay-pee-eye server, filtering by label, and retrying on changes, which is a tiny custom controller per client. And it cannot use dee-en-ess to resolve a specific pod name like ay-pee-eye dash seven-c-nine-d dash x-two-k-five-p — there is no dee-en-ess for individual pods by default, and even if there were, the name has a random suffix.
+
+What every client really wants is a stable name and a stable address that always points at "whichever ay-pee-eye pods are alive right now." That is the service.
+
+A service is a tiny piece of glue between consumers and producers. Picture this. The web pod sends a get request to h-t-t-p colon slash slash ay-pee-eye colon eighty. Dee-en-ess resolves ay-pee-eye to a stable virtual eye-pee — for example, ten dot ninety-six dot zero dot forty-two. Kube proxy and ip tables, or eye-pee-v-s, forward the packet to a healthy pod eye-pee. The web pod has no idea — and no need to know — which specific pod served the request, or that the ay-pee-eye deployment just finished a rollout.
+
+The service abstraction.
+
+A service is a kubernetes object with two halves. A virtual eye-pee and name — clients connect here, this never changes. And a selector — for example, app equals ay-pee-eye, the same label query you met in notebook two.
+
+A controller — the endpoints controller, technically — runs the loop. Step one — list all pods matching the selector that are ready. Step two — write their eye-pees into an associated endpoints object, or endpoint slice. Step three — kube proxy on every node watches those endpoints and programs the node's networking so the service's virtual eye-pee forwards to one of the ready pod eye-pees.
+
+The minimum service manifest has kind service, a metadata name, and a spec with a selector and a list of ports. Each port entry has a port — the port the service exposes — and a target port — the port the container is listening on.
+
+Notice what is not in the manifest. No list of pod eye-pees. The service has zero hardcoded references to any pod. No type — it defaults to cluster eye-pee, cluster-internal only. No image, no replicas. A service does not run anything. It only routes.
+
+Apply this and the cluster does three things behind your back. First, allocates a cluster eye-pee from the service see-eye-dee-are — typically ten dot ninety-six dot zero dot zero slash twelve. Second, registers a dee-en-ess name — the service name dot the namespace dot s-v-c dot cluster dot local — that resolves to the cluster eye-pee. Third, computes the endpoints for the selector and propagates them to every node's kube proxy.
+
+From that moment on, anything in the cluster that knows the name can talk to it.
+
+Port, target port, and node port — the three numbers.
+
+Service manifests have up to three port numbers. New users blur them together. The see-kay-ay expects you to be precise.
+
+Each entry in spec dot ports has a port — what the service listens on, cluster-internal. A target port — what the pod's container is listening on. Optionally a node port — only with type node port, this opens a port on every node. Optionally a protocol — t-c-p, which is the default, or you-dee-pee, or s-c-t-p. And optionally a name — required when there is more than one port.
+
+The mental model. An in-cluster client connects to the service on its port. The service forwards to the pod on its target port. The container listens on that target port. With type node port, there is an extra rule — external clients connect to a node on the node port, and from there they jump in via the same kube proxy rules.
+
+Port is the port the service exposes to in-cluster clients. Required. Target port is the port on the pod the traffic is forwarded to. It defaults to port if you omit it. It can be a number or a named port from the pod spec — for example, target port h-t-t-p matches a container port named h-t-t-p. Named ports are the safer choice. The container can change its port and you only edit one file. Node port is only used when type is node port, or load balancer, which implies a node port. It opens this port on every node. The default range is thirty thousand to thirty-two thousand seven hundred and sixty-seven. If you omit it, kubernetes assigns a free one.
+
+A common mistake is setting target port to the host port, or to the service's port, when the container is actually listening on something else. Always read target port from the container's container port field.
+
+Endpoints and endpoint slices.
+
+The service object holds the selector. The resolved list of pod eye-pees lives in a separate object. The original kind is endpoints — one per service, with the same name, listing every ready pod's eye-pee and port. The modern kind is endpoint slice, which has been the default since kubernetes version one point twenty-one. Each slice holds up to one hundred endpoints. Large services get multiple slices. Lower overhead at scale.
+
+Both are filled in automatically. You do not write them. The endpoints controller watches services and pods, and updates them whenever a pod matching the selector becomes ready, stops being ready, is deleted, or whenever the service's selector changes.
+
+When you read kubectl get endpoints, you are reading the live answer to "which pod eye-pees is this service pointing at right now?"
+
+If a service shows none for endpoints, that is the single most common services problem in the wild. It means no pods match the selector, or no matching pods are ready. Almost always the cause is one of three things. The service selector and pod labels disagree — usually a typo. The pods are not ready — failing readiness probe, still pulling image. Or the pods are in a different namespace from the service.
+
+Kubectl describe service, with the service name, shows the selector and the endpoint addresses side by side. The first stop when something cannot connect.
+
+A service with no selector. You can write a service with no selector at all, and create the endpoints object yourself. Both the service and the endpoints object share the same name. You list one or more external eye-pee addresses and ports in the endpoints. This is the recipe for pointing a service name at an external system — a managed are-dee-ess, a legacy virtual machine. Pods inside the cluster can still talk to the service name, and the operator can later swap it for an in-cluster deployment without touching client code.
+
+Service types.
+
+A service's spec dot type controls how reachable it is. There are four values.
+
+Cluster eye-pee — the default. The service gets a virtual eye-pee allocated from the cluster's service see-eye-dee-are. Reachable only from inside the cluster — pods, the control plane, anything kube proxy programmed. This is what every internal microservice should be.
+
+Node port. The service is reachable on every node's eye-pee, on a port from the node port range — default thirty thousand to thirty-two thousand seven hundred and sixty-seven. Node port includes cluster eye-pee — the virtual eye-pee still exists. From outside, you would hit h-t-t-p colon slash slash any node's eye-pee colon the node port. Use it for development clusters and bare-metal clusters without a load balancer. In a real cloud cluster you almost never expose node port directly. A load balancer or an ingress sits in front.
+
+Load balancer. The service is exposed through a cloud-provided external load balancer. Implicitly creates a node port too. The cluster's cloud controller manager talks to the cloud ay-pee-eye — ay-double-you-ess elastic load balancer, google cloud forwarding rule, azure load balancer — and provisions the load balancer, then writes its public eye-pee back into status dot load balancer dot ingress. On kind and minikube there is no cloud provider — load balancer services stay pending forever. Tools like met-al-bee for bare metal, or cloud provider kind, plug a fake load balancer in for local clusters.
+
+External name. A different beast — no proxying, no selector, no endpoints. Just a dee-en-ess see-name from the service name to an external hostname. Pods that look up the service get the external hostname back. Useful for giving an external dependency a kubernetes-shaped name so client manifests look the same in every environment.
+
+A summary in a sentence each. Cluster eye-pee is reachable from inside the cluster, allocates a virtual eye-pee, and fits every internal microservice. Node port is reachable from inside the cluster and on every node's eye-pee, allocates a virtual eye-pee and a node port, and fits dev clusters, bare metal, or service behind an external load balancer. Load balancer is reachable from inside the cluster and via a cloud load balancer, allocates a virtual eye-pee plus a node port plus a load balancer eye-pee, and fits publicly-exposed services in the cloud. And external name is reachable via dee-en-ess only, allocates a see-name, and fits aliasing an external host.
+
+How kube proxy actually routes traffic.
+
+The service's cluster eye-pee is a fiction. There is no process listening on ten dot ninety-six dot forty-two dot seven. So what makes the packet arrive at a pod?
+
+Kube proxy does. It runs as a daemon set on every node and watches the ay-pee-eye server for services and endpoints. When it learns about a new service, it programs the node's kernel networking so packets to the service eye-pee get rewritten to a real pod eye-pee.
+
+Three modes have existed. You will meet two in the wild.
+
+Ip tables mode, the long-time default. Kube proxy writes ip tables rules that dee-n-ay-tee packets destined for the cluster eye-pee to one of the endpoints, picked at random. Pros — simple, in-kernel, no extra process in the data path. Cons — rule count grows linearly with the number of services times endpoints, which makes rule updates slower in clusters with tens of thousands of services.
+
+Eye-pee-v-s mode. Kube proxy programs the kernel's eye-pee-v-s — eye-pee virtual server — module instead. Same idea, but with hash-based lookup instead of linear iteration, and richer load-balancing algorithms — round robin, least connections, source hash. Faster at large scale. Available on most modern distributions. Enabled per cluster.
+
+N-f tables mode. Newer alternative on linux kernels with n-f tables support. Replaces ip tables with the modern packet-filter framework. The direction of travel for new clusters.
+
+What this means for you. For everyday work, kube proxy is invisible. You write a service, traffic flows. The cases where the mode matters are debugging — running ip tables dash t n-ay-tee dash el dash n on a node shows the rules kube proxy wrote. Service mesh — tools like istio and linkerd inject sidecar envoys that intercept traffic before kube proxy sees it. They sit on top of, not instead of, kube proxy. And performance at scale — past a few thousand services, switch from ip tables to eye-pee-v-s or n-f tables.
+
+What kube proxy does not do. A common misconception — kube proxy is not in the data path of an established t-c-p connection. It only sets up the rules. The actual packets flow through the kernel directly between pod and pod, with no userspace hop. That is why service eye-pees are essentially free at runtime.
+
+Dee-en-ess in kubernetes.
+
+A cluster eye-pee is hard to remember. The piece that makes services usable is cluster dee-en-ess. Every kubernetes cluster ships a dee-en-ess server — almost always core-d-en-ess — running as a deployment in kube system, with its own service in front.
+
+When a pod starts, the kube-let writes slash e-t-c slash resolv dot conf so the pod's dee-en-ess resolver points at the core-d-en-ess service. Every name lookup the pod makes goes to core-d-en-ess first.
+
+The service dee-en-ess pattern. Core-d-en-ess exposes a name for every service — the service name dot the namespace dot s-v-c dot cluster dot local. So a service called ay-pee-eye in the default namespace resolves at ay-pee-eye dot default dot s-v-c dot cluster dot local.
+
+Three handy shortcuts apply because of the search-domain configuration in slash e-t-c slash resolv dot conf. From a pod in the default namespace, you can reach ay-pee-eye as just ay-pee-eye, or ay-pee-eye dot default, or ay-pee-eye dot default dot s-v-c, or the full name. From a pod in team-a, or any other namespace, you must include the namespace — ay-pee-eye dot default — and so on. Two takeaways. Inside the same namespace, the service name alone is enough. Across namespaces, you must include the namespace.
+
+What gets a dee-en-ess record. Services get ay records and ay-ay-ay-ay records pointing at the cluster eye-pee. Headless services get ay records pointing at every ready pod's eye-pee. Named ports on a service get ess-are-vee records — for example, underscore h-t-t-p dot underscore t-c-p dot the service name dot the namespace dot s-v-c dot cluster dot local. And pods can individually get a name, but only opt-in via spec dot hostname and spec dot subdomain. Day-to-day, you do not use pod dee-en-ess. You use service dee-en-ess.
+
+Picking a different cluster domain. The cluster dot local suffix is configurable per cluster with the kube-let cluster domain flag, but in practice everyone leaves it as cluster dot local. The see-kay-ay assumes cluster dot local.
+
+When dee-en-ess is the culprit. Symptoms — pods can hit services by cluster eye-pee but n-s lookup fails. First checks. Kubectl get pods dash n kube system, with a selector for k-eight-s app equals kube dee-en-ess, to see if core-d-en-ess pods are running and ready. Kubectl get svc dash n kube system kube dee-en-ess, to see if the dee-en-ess service is present and has endpoints. And from a debug pod, cat slash e-t-c slash resolv dot conf, to see if the nameserver is pointing at the kube dee-en-ess cluster eye-pee. We dive into the full troubleshooting flow in notebook ten.
+
+Headless services.
+
+Sometimes you do not want a virtual eye-pee. You want clients to see the individual pod eye-pees so they can connect to a specific replica, or to all of them. That is a headless service.
+
+You make one by setting cluster eye-pee to none. That is the magic word.
+
+Effects. No cluster eye-pee is allocated. No kube proxy rules. There is no virtual eye-pee to connect to. Dee-en-ess for the service name returns multiple ay records, one per ready pod. A standard dee-en-ess lookup then pick one client — java's default resolver, go's net lookup host — gets every pod's eye-pee. And endpoint slices still exist. The endpoints controller still tracks ready pods. Kubectl get endpoints still shows them.
+
+Two use cases dominate.
+
+Stateful sets. When a stateful set wants each pod individually addressable — pod zero, pod one, pod two — the canonical setup is a headless service alongside the stateful set. Core-d-en-ess then exposes per-pod dee-en-ess — the pod name dot the service name dot the namespace dot s-v-c dot cluster dot local. That is how databases like postgres and cassandra running in kubernetes find their peers. For example, cassandra zero dot cassandra dot default dot s-v-c dot cluster dot local, cassandra one dot cassandra dot default dot s-v-c dot cluster dot local, and so on. Notebook six comes back to this.
+
+Client-side load balancing. Some clients — gee-are-pee-see, kafka, anything with a connection pool — want to manage their own connection lifecycle to every backend, not have kube proxy round-robin t-c-p connections behind their back. They look up the headless service, learn every endpoint eye-pee, and open a long-lived connection to each.
+
+A regular service is the right default. If you do not have a specific reason to need a headless service, use a regular cluster eye-pee. Headless is the building block under stateful sets and a tool for specific client patterns. It is not a general improvement.
+
+Session affinity and multi-port services.
+
+Session affinity. By default, every connection to a service is independently load-balanced. The same client might hit different pods on back-to-back requests. For protocols where that is wrong — long-lived sessions stored in pod-local memory, sticky shopping carts — set spec dot session affinity to client eye-pee, and configure spec dot session affinity config dot client eye-pee dot timeout seconds. The default is three hours, or ten thousand eight hundred seconds.
+
+Client eye-pee mode hashes by the client's source eye-pee and pins them to one pod for the timeout. It is the only affinity mode kubernetes offers. For richer session stickiness — cookie-based, j-w-t based — you need an ingress controller or a service mesh.
+
+A warning. When many clients sit behind one n-ay-tee — a corporate proxy, mobile carrier see-gee-n-ay-tee — client eye-pee affinity stops being useful. Every "client" looks the same. Use it for internal traffic where each caller has a distinct eye-pee.
+
+Multi-port services. A service can expose more than one port. Each entry in spec dot ports becomes a separate routing rule. When you have more than one port, each port must have a name. For example, a service might expose port eighty named h-t-t-p forwarded to container port eighty-eighty, port ninety-ninety named gee-are-pee-see forwarded to container port ninety-ninety, and port ninety-ninety-one named metrics forwarded to container port ninety-ninety-one. Dee-en-ess still gives one set of ay records — it is still one service eye-pee. Ess-are-vee records carry the per-port detail. Clients connect to the right port by number, as usual.
+
+Service versus ingress.
+
+A service exposes a workload on one or more layer-four ports — t-c-p, you-dee-pee, s-c-t-p. It speaks the transport layer. Hostnames, paths, t-l-s, h-t-t-p routing — none of those exist at the service layer.
+
+For h-t-t-p routing — "send slash ay-pee-eye slash anything to one service, slash static slash anything to another, with t-l-s on the front and a single public eye-pee" — you want an ingress, or its newer cousin, the gateway ay-pee-eye. An ingress is itself a kubernetes object. An ingress controller — n-ginx, traefik, h-ay proxy, istio gateway — reads it and configures an h-t-t-p proxy in front of your services.
+
+A rough mental map. At layer four inside the cluster, a service of type cluster eye-pee speaks t-c-p and you-dee-pee, selector-based. At layer four from outside, a service of type node port or load balancer speaks t-c-p or you-dee-pee at the edge. At layer seven h-t-t-p, an ingress plus an ingress controller speaks h-t-t-p host and path routing with t-l-s termination. And at layer seven mesh, a service mesh like istio or linkerd speaks mutual t-l-s, retries, traffic shifting, and observability.
+
+Notebook nine covers ingress and network policy properly. For now, the takeaway is — service is the foundational primitive. Everything higher up — ingress, mesh, the gateway ay-pee-eye — uses services to find the pods, then adds smarter routing on top.
+
+Cleaning up.
+
+Delete everything this notebook created so the cluster is tidy for notebook five. Run kubectl delete deployment ay-pee-eye, then kubectl delete service ay-pee-eye, ay-pee-eye dash node port, and ay-pee-eye dash headless. Or all in one go — kubectl delete deployment, comma, service, dash dash all.

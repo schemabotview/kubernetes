@@ -1,0 +1,167 @@
+Pods, labels, and the object model.
+
+What is covered. This notebook walks through the kubernetes object model — the five top-level keys ay-pee-eye version, kind, metadata, spec, and status — and why every object you will meet follows the same shape. The anatomy of a pod manifest, field by field, from the four required keys down to container ports, environment variables, and command overrides. Pod phases, conditions, and container states — from pending to running to succeeded or failed, and the conditions that flip along the way. Restart policy — always, on failure, and never, and which kind of pod each one is for. Init containers — one-shot containers that prepare the pod before the main container starts. Multi-container pods — the sidecar pattern, shared network, and shared volumes via empty-dir. Probes — liveness, readiness, and startup, and why each one exists. Labels — the key-value pairs that turn a flat list of pods into a queryable set. Label selectors — both equality-based and set-based, the language used by kubectl dash l, services, and every controller. Annotations — non-identifying metadata for tools and humans. And namespaces — soft tenancy boundaries and how to move between them.
+
+By the end of this notebook you should be able to write a pod manifest from scratch, understand every field in it, label and select pods like the controllers do, and explain why every object you will meet in the rest of this course follows the same five-section pattern. Notebook one is the only prerequisite. You should already have a kind cluster up and kubectl working.
+
+The kubernetes object model.
+
+Open any kubernetes manifest — a pod, a service, a deployment, a config map, a secret, even a custom one — and you will find the same five top-level keys. Memorise these now and you will never feel lost in a new manifest again. Ay-pee-eye version, which names the ay-pee-eye group and version this object belongs to. Kind, which is the object type. Metadata, which carries the object's name, namespace, labels, and annotations — in short, who this object is. Spec, the desired state — what you want the cluster to do. And status, the actual state — what the cluster is currently observing.
+
+A few things to lock in.
+
+Ay-pee-eye version names the ay-pee-eye group. Core objects — pod, service, config map, namespace, and node — use just v one, the implicit core group. Newer objects use a group prefix. Apps slash v one for deployments. Batch slash v one for jobs and cron jobs. Networking dot k-eight-s dot eye-o slash v one for ingress and network policy. And are-back dot authorization dot k-eight-s dot eye-o slash v one for are-back. Kubectl ay-pee-eye resources shows the full list.
+
+Kind is the object type — pod, deployment, service, and so on. Always capitalised, always singular.
+
+Metadata is identifying information. Every object has a name, which must be unique within its namespace and kind. An optional namespace, defaulting to default. Labels. And annotations. Some fields are system-assigned, like the you-eye-dee, the resource version, and the creation timestamp.
+
+Spec is what you want. This is your contribution. You write three replicas because you want three replicas. You write image n-ginx tag alpine because you want that image.
+
+Status is what is. This is the cluster's contribution. You do not write it. The controllers fill it in. Phase running, pod eye-pee ten dot two-forty-four dot zero dot five, conditions — all status fields. You read status to understand what actually happened.
+
+The reconcile loop. The relationship between spec and status is the whole game. Picture this. On top sits the spec, which you wrote. Below it sits a controller. The controller watches the spec, observes the world, and takes action to close the gap between the two. At the bottom sits status, which the controller writes back to reflect what actually happened.
+
+Every controller in kubernetes runs the same loop. Observe the world. Compare it to the desired spec. Take action to close the gap. Forever. That is why we keep saying "declarative" — you describe the destination, and a thousand little control loops drive the cluster towards it.
+
+When you kubectl apply a manifest, you are updating spec. Some controller, somewhere, notices and starts working. When the controller is done, status reflects reality.
+
+Anatomy of a pod manifest.
+
+The smallest valid pod manifest is four required keys. Ay-pee-eye version v one. Kind pod. Metadata with a name. And a spec containing a list of containers, each with a name and an image. That manifest will create a pod and run it.
+
+But almost every pod you will meet in the wild has more fields. The realistic version adds labels and annotations under metadata. Under the container spec, it adds image pull policy, ports, environment variables, command and arguments overrides, and a working directory. And at the spec level, it adds restart policy, service account name, and termination grace period seconds.
+
+A few things worth calling out before we run anything.
+
+Container port is documentation, not a firewall. Listing it does not open anything. The container is already free to listen on any port. The field is there so services and ingresses can reference it by name — for example, a port named h-t-t-p — and so humans skimming the manifest know what the container is supposed to expose.
+
+Command overrides entry point. Arguments override see-em-dee. Same semantics as docker, same words too, just named differently. If you only set arguments, the image's entry point still runs but with your arguments.
+
+Image pull policy defaults are not what you might expect. If the image tag is latest, or omitted, the default is always — pull every time. For any other tag, the default is if not present — only pull if missing. This is why "use specific tags" is not just style. It changes behaviour.
+
+Restart policy defaults to always for bare pods. We unpack the alternatives shortly.
+
+The pod is named, but a deployment-managed pod gets an auto-generated suffix. When we meet deployments in notebook three, pod names look like web dash seven-c-nine-d-eight-f-eight-b-eight-d dash x-two-k-five-p. The random tail is the controller's way of guaranteeing uniqueness across replicas.
+
+Pod phases, conditions, and container states.
+
+A pod's status has three different views of what is happening. They overlap, but each answers a different question.
+
+The phase is the headline. One word, mutually exclusive. Pending means accepted by the cluster, but at least one container has not started — usually because of scheduling or image pull. Running means scheduled to a node, all containers created, at least one is running or starting or restarting. Succeeded means all containers terminated successfully and will not be restarted. Failed means all containers terminated and at least one failed. Will not be restarted under the default policy. And unknown means the node hosting this pod has stopped reporting in.
+
+Conditions give the deeper view. A pod has several conditions, each either true or false. Pod scheduled means the scheduler picked a node for the pod. Initialized means all init containers have completed successfully. Containers ready means every container's readiness probe is passing. And ready means the pod itself is considered ready to receive traffic — the same as containers ready for single-container pods, but different when readiness gates are used.
+
+These conditions flip in order. A pod that is stuck — say, image pull is failing — will show pod scheduled true, but initialized false and ready false. You can read the reason from the message field.
+
+Container statuses give the per-container view. For each container in the pod, you get a state in one of three forms. Waiting means not running yet, with a reason such as container creating, image pull back-off, or crash loop back-off. Running means up and running, with a started-at timestamp. Terminated means finished, with the exit code, reason, started-at, and finished-at all populated. And there is a restart count — how many times this container has been restarted by the kube-let. A growing restart count is a red flag, even if the pod is running.
+
+The troubleshooting flow. When a pod is unhealthy, your first three commands are kubectl get pods for the phase and restart count at a glance. Kubectl describe pod followed by the name for conditions, events, and container reasons. And kubectl logs followed by the name, optionally with dash dash previous, for what the application said before it died.
+
+Describe is the workhorse. Its events section at the bottom is the single richest source of "what just went wrong."
+
+Restart policy.
+
+The restart policy field on the pod spec controls what the kube-let does when a container in the pod exits. It applies to all containers in the pod — you cannot set it per-container.
+
+Always, which is the default for pods, restarts the container every time it exits, regardless of exit code. The right policy for long-running services. On failure restarts only if the container exited with a non-zero code. The right policy for batch work that should retry on failure but stop on success. Never never restarts. The right policy when you want one shot, success or failure.
+
+A few subtleties.
+
+Restart is the kube-let restarting the container, not kubernetes rescheduling the pod. Same node, same pod, same volumes — just a new container process. If the node itself dies, you need a higher-level controller — a deployment, a replica set, or a daemon set — to bring the pod back somewhere else. A bare pod with restart policy always will not survive a node failure.
+
+Crash loop back-off. When a container keeps crashing fast, the kube-let starts waiting longer between restarts — ten seconds, twenty, forty, up to five minutes. That back-off state shows up in kubectl get pods as crash loop back-off. It is not a separate phase — the pod is still running from the cluster's perspective — but the container status is waiting with that reason.
+
+For jobs, the default is different. When we meet jobs in a later notebook, the pod template defaults to restart policy on failure. The job's own controller handles whole-pod failures separately.
+
+Init containers.
+
+Sometimes a pod needs to do something before the main container starts — fetch a config file, run a database migration, wait for a dependency to be ready. That is what init containers are for.
+
+Init containers run one at a time, in order, to completion, before any main container starts. If any init container fails, the pod's restart policy kicks in. Always or on failure will keep retrying. Never marks the whole pod failed.
+
+Picture a manifest with one init container called prepare content and one main container called app. The init container writes a file into a shared volume called h-t-m-l. The main container — n-ginx — mounts the same volume at its document root. The sequence at runtime is — the pod is scheduled, the init container starts, the init container writes the file and exits with code zero, the main container starts, and n-ginx serves the file the init container wrote.
+
+Things to internalise about init containers. They use the same container spec as main containers — same image fields, same environment, same volume mounts. Anything you can do in a main container, you can do in an init container. They are sequential. Order matters. The init containers list is processed top-down. They share the pod's volumes and network namespace — that is how they pass work to the main containers, by writing to a shared empty-dir or to a socket. Their resources are not simply added to the main containers' resources. The pod's effective request is computed using the max init container against the sum of main containers — notebook seven covers this properly. And the initialized condition flips to true only after the last init container succeeds.
+
+Multi-container pods — the sidecar pattern.
+
+Notebook one mentioned that the pod abstraction earns its keep when you have helper containers. Now we put that to use.
+
+The sidecar pattern is a small companion container that adds a capability to the main container without changing the main container's image. Common examples include a log shipper that tails files written by the main container and forwards them to a central system. A service mesh proxy — envoy in istio, or the linkerd proxy — that intercepts the main container's network traffic. Or a config reloader that watches a config map mount and signals the main container when it changes.
+
+What makes the sidecar pattern work is the shared volume and the shared network. Picture a pod with two containers. The first, called app, writes timestamps to a log file inside a volume called logs. The second, called log shipper, tails the same log file from the same volume. Two containers, one shared file, because the volume is mounted in both. In a real system the shipper would forward those lines to loki, splunk, or cloud watch.
+
+You can read either container's standard output with kubectl logs, the pod name, dash see, and the container name. The dash see flag is required when the pod has more than one container — otherwise kubectl logs does not know which one you mean.
+
+Shared network — proof on local host. If the main container listens on port eighty-eighty and the sidecar wants to call it, the sidecar uses local host colon eighty-eighty. No dee-en-ess, no eye-pee lookups. They share the same network namespace. This is the same property that lets an envoy sidecar transparently intercept traffic.
+
+When not to use a sidecar. Two containers do not have to share a pod just because they cooperate. Two independent services that call each other over the network belong in two separate pods behind a service. Put them in the same pod only when they must live on the same node, for example because of a shared filesystem. Or when they have the same lifecycle — start together, die together. Or when they share the pod's network or storage.
+
+A common rookie mistake is bundling a web app and its database in one pod. They are independent services with independent scaling and lifecycle needs. They belong in separate pods, with the database fronted by its own service.
+
+Probes — liveness, readiness, and startup.
+
+A container can be running but not working. It might be deadlocked, stuck in a slow garbage-collection pause, or waiting forever on a downstream service that will never come back. The container's process never exited, so the kube-let thinks all is well — but your users are seeing timeouts.
+
+Probes let the kube-let ask the container "are you actually okay?" There are three kinds, each answering a different question.
+
+The liveness probe answers "should I restart you?" If a liveness probe fails repeatedly, the kube-let kills and restarts the container, subject to the restart policy. Use it for "this container has wedged itself, only a restart will help" cases.
+
+The readiness probe answers "should I send you traffic?" If a readiness probe fails, the kube-let marks the container as not ready. The pod's ready condition flips to false, and any service in front of the pod stops sending it traffic. The container is not restarted. Use it for "I am alive but I am warming up, or I lost my database connection, or I am shedding load" cases.
+
+The startup probe answers "are you finished booting yet?" For containers that take a long time to start, a startup probe gives them a grace period. While it is still failing, liveness and readiness probes are suspended. Once it succeeds once, the startup probe is done and the other probes take over.
+
+There are three ways to probe. H-t-t-p get does an h-t-t-p get against the container — a two-hundred or three-hundred response is a pass, anything else is a fail. T-c-p socket just tries to open a t-c-p connection on a port. And exec runs a command inside the container — exit zero is a pass.
+
+The knobs you will set most. Initial delay seconds — wait this long before the first probe to give the container time to boot. Period seconds — how often to probe. Failure threshold — how many consecutive failures before action is taken. Success threshold — how many consecutive passes before flipping back to okay, which only applies to readiness probes. And timeout seconds — how long to wait per probe before counting it as a failure.
+
+Defaults are reasonable for most apps. The see-kay-ay cares less about exact numbers and more about which probe type to pick for which failure mode.
+
+Labels — turning a flat list into a queryable set.
+
+Once you have more than a handful of pods, "list everything and look for it" stops scaling. Labels are how kubernetes solves this. They are key-value pairs attached to objects in metadata dot labels, designed for identifying and selecting groups of related objects. A pod might carry labels like app equals web, tier equals frontend, version equals v two, and environment equals prod.
+
+A few rules. Keys are strings, with an optional dee-en-ess subdomain prefix — for example, app dot kubernetes dot eye-o slash name equals web. Prefixes are conventional namespacing — tools use them to avoid clashing. Values are strings, up to sixty-three characters, alphanumeric plus dash, underscore, and dot. An object can have any number of labels. Add as many as make sense for your selection needs. And labels are identifying metadata, meant for selection, and they are case sensitive.
+
+Conventional labels. The community settled on a recommended set of labels under the app dot kubernetes dot eye-o slash prefix. App dot kubernetes dot eye-o slash name is the application name — web, redis, payments. Instance is a unique name for this deployment of the app — for example payments prod. Version is the application version. Component is the component within the app — ay-pee-eye, worker, cache. Part of is a higher-level grouping — checkout platform. And managed by is what tool created this object — helm, customise, argo see-dee. You do not have to use these, but if you do, tools — dashboards, helm, argo see-dee — automatically understand your structure.
+
+Setting and changing labels. You can write labels in a manifest, or change them on the fly. Kubectl label, the pod name, key equals value, adds a label. Adding dash dash overwrite changes a label. A trailing dash on the key — for example env dash — removes a label. Kubectl get pods dash dash show labels lists pods with their full label sets.
+
+Changing a label is more consequential than it looks. A controller selects pods by label. If you change a pod's labels, you might be removing it from its deployment's set — so the deployment will create a new pod to replace it — or adding it to another's. A useful debugging trick is to relabel a misbehaving pod out of its deployment, leave it for inspection, and let the deployment respawn its sibling.
+
+Label selectors.
+
+A selector is a small expression that filters objects by their labels. There are two flavours — equality-based, the simple one, and set-based, the powerful one.
+
+Equality-based selectors. The everyday syntax. Three operators — equals, double equals which means the same as equals, and not equals. App equals web matches the label app equals web. Tier not equals frontend matches anything except frontend. App equals web, comma, env equals prod is a logical and — both must be true. Comma-separated terms mean and. There is no or. For or, you need set-based selectors.
+
+Set-based selectors. The richer language. Four operators — in, not in, exists, which is just the key without a value, and does not exist, written as an exclamation mark before the key. Environment in parentheses prod, staging matches either. Tier not in parentheses frontend, backend matches anything outside that set. Just the word release means the label release exists, with any value. An exclamation mark release means the label release does not exist. You can combine multiple set-based terms with commas — that is also and. You can also mix equality- and set-based terms in one selector.
+
+Where selectors show up. Selectors are everywhere in kubernetes. Kubectl dash l for interactive filtering. Services use spec dot selector to pick the pods the service routes to. Deployments, replica sets, daemon sets, and jobs use spec dot selector to pick the pods they manage. Network policies use pod selector. Pod disruption budgets and horizontal pod autoscalers use the same idea. Everywhere you would want to refer to a group of pods without naming them individually, the answer is a label selector.
+
+Why this matters more than it looks. Notice what selectors are not. They are not foreign keys. They are not references by name. They are not edges in a graph. The connection between a service and its pods is loose. The service says "any pod with app equals web" and kubernetes resolves that every time, in real time. Add a pod with that label and it joins the set automatically. Remove the label and it falls out. This is the same loose coupling that makes rolling updates possible — the service does not track individual pods, just whichever ones match right now.
+
+Annotations — non-identifying metadata.
+
+Labels are for selection. Annotations are for everything else you want to attach to an object. Same key-value shape, lives at metadata dot annotations, but with no constraint on length or character set, and no use by selectors.
+
+Use cases. Human-readable notes for whoever is reading the manifest next week. Build metadata — git commit, see-eye run u-r-l, image digest at deploy time. Tool configuration — ingress controllers, service meshes, and operators all read annotations to opt features on or off without changing the object's schema. For example, n-ginx dot ingress dot kubernetes dot eye-o slash rewrite target. And kubernetes' own bookkeeping — kubectl apply stores its last-applied state in an annotation, and that is how it computes a three-way merge on the next apply.
+
+Rule of thumb. If you want to find this object later by some property, use a label. If you want to describe the object or carry data that some tool will read, use an annotation. You can set, change, and remove annotations with kubectl annotate, using the same key equals value syntax as kubectl label.
+
+Namespaces — soft tenancy boundaries.
+
+A namespace is a way to scope object names. Two pods can both be called web if they are in different namespaces. Default slash web and staging slash web are distinct objects. Most resource kinds are namespaced. A handful — nodes, persistent volumes, storage classes, cluster roles — are cluster-scoped.
+
+What a namespace gives you. Name uniqueness scope — names only need to be unique within the namespace and kind pair. A target for are-back — you can grant a user access to namespace team-a without giving them the whole cluster. A target for quotas and limits — resource quota and limit range apply per namespace. And a dee-en-ess suffix — services get a dee-en-ess name like service dot namespace dot s-v-c dot cluster dot local.
+
+What a namespace does not give you. Network isolation. By default, every pod can reach every other pod regardless of namespace. Network policy, in notebook nine, is what isolates traffic. And strong tenancy. Namespaces are soft boundaries, suitable for separating teams or environments within one trusted organisation, not for hostile multi-tenancy.
+
+The built-in namespaces. A fresh cluster has four. Default is where your stuff lands if you do not specify. Use it for learning. Do not use it for real workloads. Kube system is where kubernetes' own components live — core-d-en-ess, the kube proxy daemon set, the controller manager, the scheduler. Kube public is readable by everyone, even unauthenticated users. Rarely used. And kube node lease is where node heartbeats live — each node renews a lease object there every few seconds.
+
+Switching namespaces. The dash n flag followed by a namespace works on every command. To make it stick, run kubectl config set context dash dash current dash dash namespace equals team-a. That changes your kube config context so subsequent commands default to team-a. A common shortcut is the kube-n-s helper, part of kube-c-t-x, which gives you a menu to switch.
+
+Cleaning up.
+
+Delete everything this notebook created so the cluster is tidy for notebook three. Run kubectl delete pod followed by the names — web, web with init, web with sidecar, probed, oneshot, and looper. Then kubectl delete namespace demo. Or, more bluntly, kubectl delete pods dash dash all to wipe every pod in the default namespace.

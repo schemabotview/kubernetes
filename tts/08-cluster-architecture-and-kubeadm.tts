@@ -1,0 +1,175 @@
+Cluster architecture, and kube-ay-dee-m.
+
+What is covered. This notebook walks through the control plane in detail — every component you have been calling by name, including et-see-dee, kube ay-pee-eye server, kube scheduler, kube controller manager, and cloud controller manager, what each one actually does, and how they talk to each other. The request flow through the kube ay-pee-eye server — authentication, then authorisation, then admission, then a write to et-see-dee. The node components — the kube-let, kube proxy, and the container runtime. The plug-in interfaces — see-are-eye for the runtime, see-en-eye for networking, and see-ess-eye for storage. The cluster does not ship these. You do. Static pods — pod manifests in slash e-t-c slash kubernetes slash manifests, run by the kube-let without involving the ay-pee-eye server, and how the control plane bootstraps itself. Kube-ay-dee-m — the canonical tool for installing a cluster from scratch, and the see-kay-ay's chosen install path. The cluster public-key infrastructure — what certificates exist, where they live, who signs what. Et-see-dee backup and restore — et-see-dee-ctl snapshot save and restore, the single most important operational skill the see-kay-ay tests. And cluster upgrade with kube-ay-dee-m — control plane first, kube-lets second, plus the version-skew rules.
+
+By the end of this notebook you should be able to draw the cluster on a whiteboard, install a new cluster from scratch in your head, back up and restore et-see-dee, and walk through what happens when you kubectl apply — from your terminal all the way to the kube-let starting a container. Notebook one is the prerequisite. You have already met every component once. This is the chapter where each one earns its own paragraph.
+
+The control plane in one diagram.
+
+We sketched this in notebook one. Here it is with every piece named.
+
+Picture the control plane on the left as a single box containing five smaller boxes. At the bottom-left sits et-see-dee, the cluster's source of truth. Next to it sits the kube ay-pee-eye server, with arrows in both directions. The ay-pee-eye server is also where kubectl, and every other client, connects. Above it sit two more boxes — the kube scheduler, which watches pending pods and binds them to nodes, and the kube controller manager, which is a bag of roughly thirty controllers including deployment controller, replica set controller, job controller, node controller, endpoints controller, service account controller, and more. Below them, the cloud controller manager talks to the cloud provider.
+
+On the right, each worker node runs three things. The kube-let — the agent that runs pods. Kube proxy — the data plane for services. And the container runtime — typically container-d or see-are-eye-oh. The kube-let talks to the runtime via see-are-eye. Each node also has a container network interface agent. Your pods land on these worker nodes.
+
+Rules of thumb to memorise. Only the ay-pee-eye server talks to et-see-dee. Every other component talks to the ay-pee-eye server. The ay-pee-eye server is stateless. It can be horizontally scaled. The state lives in et-see-dee. Controllers do not poll. They watch — a long-lived h-t-t-p-s stream from the ay-pee-eye server delivers events. And nodes do not trust each other. Everything authenticates to the ay-pee-eye server, which is the single source of trust.
+
+Et-see-dee — the cluster's source of truth.
+
+Et-see-dee is a distributed key-value store. Every kubernetes object you have created — every pod, deployment, config map, secret, namespace, node — is a row in et-see-dee. If et-see-dee goes away, the cluster's memory goes with it.
+
+Properties that matter. Strongly consistent — built on the raft consensus algorithm. Reads always see the latest committed write. Highly available with an odd-number cluster — production runs three or five et-see-dee members and can tolerate up to n minus one, divided by two, failures. Listens on port twenty-three seventy-nine for clients and twenty-three eighty for peers. Both ports require tee-el-ess in any non-trivial cluster. And authenticates clients with certificates. The ay-pee-eye server is its primary client, and authenticates with the ay-pee-eye server et-see-dee client certificate.
+
+Et-see-dee is often a static pod. In a kube-ay-dee-m cluster, et-see-dee runs as a static pod on the control-plane nodes — defined by a manifest at slash e-t-c slash kubernetes slash manifests slash et-see-dee dot yaml. The kube-let starts it before anything else. The alternative — external et-see-dee — runs et-see-dee on dedicated machines outside the kube-let's control. More moving parts, better blast-radius isolation. Big managed offerings tend to use this layout.
+
+What is in et-see-dee. Every kubernetes object, serialised as proto-buf, or j-son in older clusters, under a key like slash registry slash pods slash default slash a specific pod name. You can poke at it with et-see-dee-ctl, but in practice you talk to the ay-pee-eye server with kubectl get and let it talk to et-see-dee. Direct et-see-dee reads are reserved for forensics and backups.
+
+Backup and restore — the see-kay-ay flag-bearer skill. We cover the actual commands later in this notebook. Internalise now — et-see-dee backup is the cluster's life insurance. Lose et-see-dee, lose the cluster. No objects, no persistent volume bindings, no nothing. Backup is a snapshot save. Restore is a snapshot restore followed by pointing et-see-dee at the new data directory. The see-kay-ay reliably tests both.
+
+Kube ay-pee-eye server — the front door.
+
+The ay-pee-eye server is the only thing that ever writes to et-see-dee. It is also the only thing every other component talks to. Killing it does not kill the workloads — they keep running where they are — but it stops the cluster from making any new decisions.
+
+The request flow. Every ay-pee-eye request — kubectl get pods, the scheduler watching for new pods, the kube-let patching pod status, your continuous-integration pipeline applying a manifest — goes through the same five stages.
+
+First, authentication, often abbreviated auth-n. Who is this request from? The ay-pee-eye server tries each configured authenticator in order — client certificates, bearer tokens including service account j-w-ts and static tokens, open-eye-dee connect, and webhook. The first one that recognises the credential wins. The request is now tagged with the user identity. If none recognises, the response is four-zero-one.
+
+Second, authorisation, often abbreviated auth-z. Can this user do this action on this object? Usually are-back, covered in notebook ten. Match the verb — get, list, create, update, delete, watch, patch — against the user's bound roles. Can be combined with node authorisation, where kube-lets only get what they need. Webhook authorisation. And ay-b-ay-see, which is deprecated. If denied, four-zero-three.
+
+Third, admission control. The request is allowed, but should it be modified, or rejected for policy reasons? Mutating admission controllers can change the request. Examples — mutating admission webhook, the service account controller which mounts a token, and limit ranger which fills in default requests. Validating admission controllers can reject the request. Resource quota, pod security, custom validating webhooks like gatekeeper, kyverno, and company policies.
+
+Fourth, validation. Final schema check against the object kind. Required fields present? Field types right? Immutable fields not changed? If not, four-two-two.
+
+Fifth, persistence. The possibly mutated object is written to et-see-dee. After this, watchers see the change and the controllers do their thing.
+
+Why this matters. Most "I applied this and nothing happened" debugging traces back to one of these stages. Four-zero-one means auth-n — bad credential, expired cert. Four-zero-three means auth-z — are-back rule missing. A webhook error during admission means some operator's validating webhook rejected you. And four-two-two means validation — the field does not exist on that kind or version. Kubectl with verbose level eight shows the full h-t-t-p traffic, including which stage rejected what. Worth knowing for the exam's troubleshooting bucket in notebook ten.
+
+The ay-pee-eye server's flags. The ay-pee-eye server takes a long list of flags. The ones the see-kay-ay expects you to recognise. Et-see-dee servers — where et-see-dee lives. Service cluster eye-pee range — the service eye-pee pool. Authorization mode — which authorisers, in order, like node comma are-back. Enable admission plugins — the admission chain, like namespace lifecycle, limit ranger, service account, and more. And client see-ay file, tee-el-ess cert file, and tee-el-ess private key file — the tee-el-ess material.
+
+You will see all of these in slash e-t-c slash kubernetes slash manifests slash kube ay-pee-eye server dot yaml on a kube-ay-dee-m node.
+
+Kube scheduler, and kube controller manager.
+
+Two control-plane workhorses you have already met.
+
+Kube scheduler, recap from notebook seven. Watches pending pods, filters and scores nodes, binds the pod to the winning node. Pluggable via scheduling profiles. Runs as a static pod from slash e-t-c slash kubernetes slash manifests slash kube scheduler dot yaml. Talks to the ay-pee-eye server, never to nodes directly.
+
+Kube controller manager. A single binary that hosts roughly thirty distinct controllers, each running the same observe, compare, act loop you have seen throughout this course. The ones that matter most. The node controller — watches node objects, marks nodes not ready when they stop heart-beating, manages no execute taints. The deployment controller, replica set controller, daemon set controller, stateful set controller, job controller, and cron job controller — each watches its own kind and creates the pods. The endpoints, or endpoint slice, controller — watches services and pods, maintains the list of ready pod eye-pees behind each service. The service account controller — creates a default service account per namespace, and a token secret per service account, on the legacy path. The namespace controller — cascades deletes, so when a namespace is terminating, it deletes everything in it. The persistent volume and persistent volume claim binder — matches claims to volumes, covered in notebook six. The horizontal pod autoscaler controller — adjusts deployment replicas based on metrics. And the time-to-live and garbage collector controllers — clean up objects with t-t-l or finalisers.
+
+Bundling them in one binary is just packaging. Each controller logically runs on its own. They elect a leader, so only one instance is active at a time, even when the binary runs h-a across multiple control-plane nodes, using lease objects in kube system.
+
+Cloud controller manager. The cloud-specific bits used to live in the kube controller manager. They were extracted to a separate binary so non-cloud and bare-metal clusters do not need them, and so cloud providers can ship their own. It runs three things. The node controller, cloud side — talks to the cloud ay-pee-eye to learn about virtual machines, adds and removes node addresses. The route controller — programs cloud routing for pod see-eye-dee-ares. And the service controller — provisions cloud load balancers for services of type load balancer, covered in notebook four.
+
+In a cluster with no cloud — your kind — the cloud controller manager is not running at all.
+
+Node components — kube-let, kube proxy, and the container runtime.
+
+Every node, control-plane or worker, runs three things in coordination.
+
+Kube-let. The agent on the node. The kube-let does not run as a pod. It is a system service started by system-d, or whatever init system the node uses. Its job. One, register the node with the ay-pee-eye server. Two, watch the ay-pee-eye server for pods whose spec dot node name equals this node. Three, for each such pod, drive the container runtime to make it real — pull image, create network namespace, mount volumes, start containers. Four, run probes — liveness, readiness, and startup, from notebook two — and restart containers per restart policy. Five, report status back to the ay-pee-eye server — phases, conditions, container states. And six, monitor node-level pressure — memory, disk, process count — and evict when over thresholds.
+
+The kube-let does not schedule. It only runs what has been bound to its node.
+
+Kube proxy. The data-plane half of services. Watches services and endpoint slices, programs the node's kernel networking — ip tables, eye-pee-v-s, or n-f tables, from notebook four — so the service cluster eye-pees route to real pod eye-pees. Runs as a daemon set pod in kube system. Optional in modern clusters — some container network interface plugins replace it entirely. Cilium with e-b-p-f, for example.
+
+Container runtime. What actually runs containers. Kubernetes does not ship a runtime. It speaks see-are-eye — the next section — to whichever one is installed. The two production-grade options. Container-d — the most common choice today. Lightweight, from the docker project, donated to the cloud native computing foundation. And see-are-eye-oh — a kubernetes-native runtime from red hat, and the openshift ecosystem.
+
+Docker engine itself is no longer a supported runtime. The docker shim adapter that bridged kube-let to docker was removed in kubernetes one point twenty-four. The runtime usually lives at a unix socket like slash run slash container-d slash container-d dot sock. The kube-let's container runtime endpoint flag points at it.
+
+The plug-in interfaces — see-are-eye, see-en-eye, see-ess-eye.
+
+Kubernetes is small at the core. Three big plug-in points let it talk to whatever runtime, network, and storage you have.
+
+See-are-eye, the container runtime interface. A gee-are-pee-see ay-pee-eye the kube-let speaks to a local runtime. Two services. Runtime service — creating pods and containers, lifecycle. And image service — pulling and listing images. The kube-let does not know whether container-d or see-are-eye-oh is on the other end of the socket. It just calls see-are-eye. One see-are-eye implementation per node.
+
+See-en-eye, the container network interface. A spec — not gee-are-pee-see, just a small j-son-over-standard-input protocol — for "set up a container's network namespace." When the kube-let creates a pod's network namespace, it invokes the configured see-en-eye plugin, which does three things. One, allocates a pod eye-pee from the node's pool. Two, programs routing so the pod can talk to other pods, services, and out to the internet, subject to network policy. Three, hands back the eye-pee for the kube-let to record in pod status.
+
+Common see-en-eye plugins — calico, cilium, flannel, weave net, antrea, amazon v-p-c see-en-eye, and azure see-en-eye. They differ in encapsulation — v-x-l-a-n or eye-pee-in-eye-pee overlay versus flat layer-three routing versus cloud-native, with e-b-p-f or ay-double-you-ess elastic network interfaces. Network policy implementation — ip tables, eye-pee-v-s, or e-b-p-f. And performance — e-b-p-f-based plugins like cilium can skip ip tables entirely. Kind ships with kind-net. Multi-see-en-eye options like multus exist for advanced cases.
+
+See-ess-eye, the container storage interface. Covered in notebook six. Gee-are-pee-see ay-pee-eye between kubernetes and storage backends. One see-ess-eye driver per backend you want to talk to — e-b-s, gee-see-ee persistent disk, n-f-s, ceph, local path.
+
+The point of all three. Kubernetes' job is orchestration — placing workloads, managing their lifecycle, handling failures. The actual doing — running containers, plumbing networks, attaching disks — is delegated. Same orchestration logic runs on a raspberry pi, with k-three-s, container-d, flannel, and local storage, or on a one-thousand-node cloud cluster with elastic kubernetes service, container-d, ay-double-you-ess v-p-c see-en-eye, and e-b-s see-ess-eye.
+
+Static pods.
+
+A static pod is a pod the kube-let runs directly from a manifest on disk, without involving the ay-pee-eye server at all.
+
+The kube-let watches a directory — by default slash e-t-c slash kubernetes slash manifests — for yaml files. Each file is a pod manifest. The kube-let reads the file, starts the pod, creates a mirror pod in the ay-pee-eye server so kubectl get pods can see it, named pod dash node, and keeps the pod alive — restarts on crash — and watches the file for changes.
+
+You cannot kubectl delete a static pod. Deleting the mirror pod just removes it from the ay-pee-eye server's view. The kube-let will recreate the mirror within seconds. To stop a static pod, move or delete its manifest file on the node.
+
+Why this exists. The control plane has a chicken-and-egg problem. How do you start the ay-pee-eye server when you need the ay-pee-eye server to start it? Static pods are the answer.
+
+On a kube-ay-dee-m installed control-plane node, slash e-t-c slash kubernetes slash manifests contains four files — et-see-dee dot yaml, kube ay-pee-eye server dot yaml, kube controller manager dot yaml, and kube scheduler dot yaml. The kube-let starts on system boot, reads those files, and brings up the control plane. Et-see-dee first, because the ay-pee-eye server needs it. Then the ay-pee-eye server. Then the rest.
+
+Static pods are useful outside the control plane too. For node-level agents that must run even if the ay-pee-eye server is unreachable — a node-monitoring daemon, an emergency log shipper — a static pod is the right answer. Do not bother for application workloads. Use a daemon set, which the kube-let runs via the ay-pee-eye server.
+
+Kube-ay-dee-m — installing a cluster from scratch.
+
+Kube-ay-dee-m is the canonical installer for kubernetes clusters. It does not provision machines, install the operating system, configure firewalls, or pick a see-en-eye. Those are your problem. What it does do is set up the control plane and bootstrap join tokens, given that you have a set of linux machines with a container runtime installed, the kube-let, kube-ay-dee-m, and kubectl binaries installed on each, a pod see-eye-dee-are you have chosen, and network connectivity between nodes.
+
+A typical install is two commands. Kube-ay-dee-m init on the first control-plane node, then kube-ay-dee-m join on every other node.
+
+Kube-ay-dee-m init brings up the control plane. On the chosen first control-plane node, run kube-ay-dee-m init with a pod network see-eye-dee-are flag, an ay-pee-eye server advertise address flag, and an upload certs flag — the last one for adding more control-plane nodes later.
+
+What happens, in order. One, pre-flight checks — kernel version, swap off, ports free, runtime ready, group memberships. Fails loudly if anything is wrong. Two, generate the cluster public-key infrastructure. Kube-ay-dee-m creates a certificate authority in slash e-t-c slash kubernetes slash p-k-i and signs certificates for the ay-pee-eye server, et-see-dee, kube-let client, and others. Three, write static-pod manifests. The four yaml files we just discussed go to slash e-t-c slash kubernetes slash manifests. Four, wait for the control plane to come up. The kube-let is already running, you started it before kube-ay-dee-m. It reads the manifests and starts the static pods. Five, bootstrap addons. Install core-d-en-ess as a deployment, install kube proxy as a daemon set. And six, print a kube-ay-dee-m join command with a token. Save this. You need it to add more nodes.
+
+Kube-ay-dee-m join adds a node. On each additional node, worker or control-plane, run kube-ay-dee-m join with the control plane address, a token flag, and a discovery token see-ay cert hash flag. For an additional control-plane, also add the control plane flag and the certificate key flag.
+
+What happens. The kube-let contacts the ay-pee-eye server using the join token, with bootstrap auth. It receives the cluster's certificate authority and verifies it against the s-h-a two-fifty-six hash you passed in. The node is registered. For a worker, the kube-let starts watching for pods bound to itself. For a control-plane node, it fetches the encrypted control-plane certs from a secret in kube public, decrypts with the certificate key, and writes its own static-pod manifests.
+
+Tokens are short-lived. Kube-ay-dee-m init gives you a twenty-four-hour token by default. After it expires, run kube-ay-dee-m token create with the print join command flag to generate a new join command. Kube-ay-dee-m token list shows active tokens.
+
+Installing a see-en-eye is your job. Kube-ay-dee-m init does not install a see-en-eye. Until you do, all pods stay in pending, or container creating — they have no network. After init, kubectl apply a calico manifest, or whichever see-en-eye you picked. Core-d-en-ess pods will start running once the see-en-eye is up.
+
+The cluster public-key infrastructure — who has what certificate.
+
+A kubernetes cluster is held together by tee-el-ess. Almost every component talks to almost every other component over h-t-t-p-s, and identities are proven with ex five-oh-nine client certificates.
+
+The certificate authorities. A kube-ay-dee-m cluster has two certificate authorities by default. Kubernetes see-ay, at slash e-t-c slash kubernetes slash p-k-i slash see-ay dot c-r-t — signs all the front-end certs, including the ay-pee-eye server and kube-let clients. And et-see-dee see-ay, at slash e-t-c slash kubernetes slash p-k-i slash et-see-dee slash see-ay dot c-r-t — signs et-see-dee's own server and peer certs.
+
+A third — front proxy see-ay — is used by the ay-pee-eye aggregation layer for extension ay-pee-eye servers, like metrics server and custom resources. Less day-to-day relevance.
+
+Certificates by role, living in slash e-t-c slash kubernetes slash p-k-i. The ay-pee-eye server cert is signed by the kubernetes see-ay, identifies the ay-pee-eye server's hostnames, and is used by the ay-pee-eye server as its tee-el-ess server cert. The ay-pee-eye server kube-let client cert is signed by the kubernetes see-ay, identifies "kube ay-pee-eye server kube-let client," and is used when the ay-pee-eye server connects to kube-lets. The ay-pee-eye server et-see-dee client cert is signed by the et-see-dee see-ay and used when the ay-pee-eye server connects to et-see-dee. Et-see-dee's server cert is signed by the et-see-dee see-ay and is its tee-el-ess server cert. Et-see-dee's peer cert is also signed by the et-see-dee see-ay and is used between et-see-dee peers. And the front proxy client cert is signed by the front proxy see-ay and used when the ay-pee-eye server talks to extension ay-pee-eyes.
+
+Plus, per node, the kube-let has its own certificate at slash var slash lib slash kube-let slash p-k-i slash kube-let client current dot p-e-m. Modern clusters use the kube-let certificate-rotation mechanism. The kube-let asks the ay-pee-eye server for a new cert before the old one expires.
+
+Kube config files. The control-plane components do not read certs directly. They read kube config files that bundle a cert, key, and ay-pee-eye server u-r-l. Slash e-t-c slash kubernetes slash admin dot conf is for cluster admins. Give to a human, never commit. Slash e-t-c slash kubernetes slash kube-let dot conf is for the local kube-let, often replaced by rotated certs. And there are also controller manager dot conf and scheduler dot conf. Your laptop's tilde slash dot kube slash config is the same format. Kube-ay-dee-m produces admin dot conf and tells you to copy it to your home directory.
+
+Certificate expiry. The certs kube-ay-dee-m issues have a one-year lifetime by default. Two ways to renew before they expire. Kube-ay-dee-m certs check expiration shows what is expiring when. Kube-ay-dee-m certs renew all renews everything, and needs a control-plane restart. Kube-ay-dee-m upgrade, later in this notebook, also rotates certs as a side effect. The see-kay-ay loves this question — "your cluster stopped working a year after install, what is wrong?" The answer is — certs expired.
+
+Et-see-dee backup and restore — the see-kay-ay's flag-bearer skill.
+
+Lose et-see-dee, lose the cluster. The see-kay-ay tests et-see-dee snapshot save and restore reliably. Learn it cold.
+
+Backup with et-see-dee-ctl snapshot save. Et-see-dee-ctl is the command-line client for et-see-dee. On a kube-ay-dee-m cluster you can kubectl exec into the et-see-dee static pod and run it there — the binary is bundled in the et-see-dee image. Or run it directly on the control-plane node if et-see-dee-ctl is on the host's path. The required pieces of authentication. Endpoints — where et-see-dee is listening, typically h-t-t-p-s on local-host port twenty-three seventy-nine. See-ay cert — et-see-dee's certificate authority, at slash e-t-c slash kubernetes slash p-k-i slash et-see-dee slash see-ay dot c-r-t. Cert — a client cert that et-see-dee trusts, at slash e-t-c slash kubernetes slash p-k-i slash et-see-dee slash server dot c-r-t. And key — its private key, at slash e-t-c slash kubernetes slash p-k-i slash et-see-dee slash server dot key.
+
+Then the command itself — et-see-dee-ctl-api equals three, et-see-dee-ctl snapshot save, a destination path, then the four flags. A snapshot is a single file. Move it off the node. That is your backup.
+
+Verify a snapshot. Et-see-dee-ctl, write out equals table, snapshot status, the file. Shows the snapshot's revision, the number of keys, and the storage hash. If et-see-dee-ctl will not read the file, the file is broken. Make another one.
+
+Restore with et-see-dee-ctl snapshot restore. The standard see-kay-ay scenario — the cluster is broken, here is a snapshot, restore it. Procedure. One, stop the control plane. On the node, move the static-pod manifests out of slash e-t-c slash kubernetes slash manifests, for example into slash tmp. The kube-let sees they are gone and stops the static pods. Wait until et-see-dee and the ay-pee-eye server are down. Two, restore the snapshot to a new data directory. Do not overwrite the existing slash var slash lib slash et-see-dee. Use the data dir flag with a fresh path. Three, point et-see-dee at the new data directory. In slash e-t-c slash kubernetes slash manifests slash et-see-dee dot yaml, change the volumes host path path for the et-see-dee data volume to the new path. Four, restore the static-pod manifests. Move them back. The kube-let starts everything. Et-see-dee boots from the snapshot. And five, verify with kubectl get nodes and kubectl get pods dash capital-a. The cluster should look like it did at the time of the backup.
+
+Things to memorise. Et-see-dee-ctl-api equals three — version three is the only one anyone uses. The environment variable is required on older et-see-dee-ctl versions. Modern et-see-dee-ctl, three point five and later, defaults to v three. Three certs — see-ay, cert, key. They live under slash e-t-c slash kubernetes slash p-k-i slash et-see-dee. A snapshot is point-in-time. Anything created or changed after the snapshot is lost on restore. And external et-see-dee is the same recipe, different host. Endpoints points at the external cluster. Certs come from wherever you stashed them.
+
+Cluster upgrade with kube-ay-dee-m.
+
+You do not kubectl your way to a new kubernetes version. You run kube-ay-dee-m upgrade on the nodes themselves. The see-kay-ay may not ask you to upgrade end-to-end, but it will ask you to describe the order and the version-skew rules.
+
+The version-skew rule. Kubernetes' compatibility guarantees. Kubectl can be plus-or-minus one minor version from the ay-pee-eye server. Kube ay-pee-eye server is the highest version in the cluster. Everything else trails or matches. Controller manager, scheduler, and cloud controller manager — same minor as the ay-pee-eye server, or one minor older. Kube-let — up to two minor versions older than the ay-pee-eye server in kubernetes one point twenty-eight and later, previously one. And kube proxy — same minor as the kube-let on the node.
+
+So a one point twenty-nine ay-pee-eye server can talk to one point twenty-eight and one point twenty-seven kube-lets. A one point twenty-seven ay-pee-eye server cannot talk to a one point twenty-nine kube-let. Upgrade the control plane first, kube-lets after.
+
+Upgrade order. For a multi-control-plane cluster. First control-plane node — upgrade the kube-ay-dee-m binary first via the package manager. Then kube-ay-dee-m upgrade plan, then kube-ay-dee-m upgrade apply with the target version. Drain the node with kubectl drain, the node, ignore daemon sets. Upgrade kube-let and kubectl packages. Restart the kube-let with system-d daemon reload and system-d restart kube-let. Then uncordon the node. Each additional control-plane node — same, but use kube-ay-dee-m upgrade node instead of upgrade apply. The first node already did the cluster-wide work. Each worker node — drain, upgrade kube-ay-dee-m plus kube-let plus kubectl, restart kube-let, uncordon.
+
+What kube-ay-dee-m upgrade actually does. Pulls new control-plane images for the target version. Rotates certificates — a free renewal, useful even outside a version bump. Updates static-pod manifests with the new image tags. The kube-let sees the change and restarts the static pods. And updates kube proxy and core-d-en-ess addons. The kube-let itself is not upgraded by kube-ay-dee-m upgrade. You upgrade its package separately.
+
+Skip-level upgrades are not allowed. You can only upgrade one minor version at a time — one point twenty-seven to one point twenty-eight to one point twenty-nine. Never one point twenty-seven to one point twenty-nine in one shot. Patch versions are free — one point twenty-eight point three to one point twenty-eight point seven any time.
+
+What to practise.
+
+This chapter does not have its own cleanup. We did not deploy any workloads. But it is the densest content in the course, and the see-kay-ay tests it heavily. Concrete things to practise before the exam.
+
+Backup and restore et-see-dee on your own kind cluster. Time yourself. Aim for under five minutes. Bring the cluster down, restore from a snapshot, bring it back up. Find a control-plane component's flag in the static-pod manifest. Pick one, change it, watch the kube-let restart the pod. Read kube-ay-dee-m certs check expiration output. Know which cert means what. Walk through kube-ay-dee-m init and kube-ay-dee-m join on paper. What happens at each step, in order. Write the version-skew rule from memory. Which component can lag, by how much. And trace a kubectl apply through auth-n, auth-z, admission, validation, and et-see-dee. Know which response code each stage returns when it rejects.
+
+Nothing to delete — the cluster is still where you left it. Notebook nine is networking, ingress, and network policies. It builds on the services chapter, notebook four, and on this notebook's see-en-eye and kube proxy overview.

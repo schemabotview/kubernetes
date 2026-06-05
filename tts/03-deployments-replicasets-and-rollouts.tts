@@ -1,0 +1,123 @@
+Deployments, replica sets, and rollouts.
+
+What is covered. This notebook walks through why bare pods are not enough — controllers, reconciliation, and the difference between "a pod exists" and "a workload is running." The replica set, which is the controller that keeps a fixed number of copies of a pod alive against a label selector. The deployment, which is the controller that manages replica sets so you can ship new versions safely. The anatomy of a deployment manifest — spec dot replicas, spec dot selector, spec dot template, and how they fit together. The ownership chain — a deployment owns replica sets, and a replica set owns pods, traced through metadata dot owner references. Scaling — kubectl scale, the replicas field, and what a controller does when the number changes. Rolling updates — max surge, max unavailable, and how kubernetes ships a new version without dropping traffic. Rollout history and rollback — kubectl rollout history, kubectl rollout undo, and the change cause annotation. Update strategies — rolling update versus recreate, and when to pick each. And the rest of the workload family — daemon set, stateful set, job, and cron job — what each one is for and where the rest of the course will revisit them.
+
+By the end of this notebook you should be able to write a deployment manifest, ship a new image with zero downtime, roll it back if it misbehaves, and recognise which workload kind each problem calls for. Notebooks one and two are the prerequisites — you should already be comfortable with the object model and label selectors, because controllers live or die by them.
+
+Why bare pods are not enough.
+
+Notebook two created pods directly. That works for learning, but it falls over in production for two reasons.
+
+Bare pods do not survive node failure. A pod object lives in et-see-dee referencing a specific node. If that node dies, the kube-let there stops reporting in. The pod's phase eventually becomes unknown, and nothing moves it elsewhere. The pod is just gone.
+
+Bare pods do not roll forward. Suppose you have deployed web running n-ginx tag one point twenty-seven alpine, and you want to update to one point twenty-eight. With bare pods, you would need to delete the old pod and create a new one. There is a window with zero pods running. For a long-running service, that is a service outage.
+
+What you really want is a higher-level object that says — I want three copies of this pod template alive at all times, anywhere in the cluster, and when I change the template, replace the running pods gracefully. That object is the deployment.
+
+Controllers — the missing word. A controller is a program, usually inside the kube controller manager, that watches a particular kind of object and works to make reality match its spec. You have already met one without knowing it — the kube-let is a controller for pods on its node. There are many others. The replica set controller — for each replica set, ensures the right number of matching pods exist. The deployment controller — for each deployment, manages a replica set, and creates new replica sets during rollouts. The daemon set controller ensures one pod per node. The stateful set controller manages pods with stable identities and storage. The job controller runs a pod to completion. And the node controller marks nodes unreachable when they stop heart-beating.
+
+Every controller is the same loop. Read the desired state from et-see-dee, observe reality, take action to close the gap, write the observed state back to status. That is the whole game. We met this pattern in notebook two. Now we will see what it actually produces.
+
+The replica set.
+
+The replica set is the simplest workload controller. Its job is to keep exactly n pods alive that match a label selector.
+
+A replica set manifest has three top-level spec fields. Replicas — the target count, how many pods you want. Selector — the label query used to identify "my pods." And template — a complete pod spec. Everything below spec dot template dot spec is exactly what you would put in a pod manifest.
+
+When the replica set controller observes this object, it runs a tight loop. Step one — count the pods matching selector dot match labels. Step two — if fewer than replicas, create new pods from the template. Step three — if more than replicas, delete the excess. Step four — repeat forever.
+
+The selector and the template labels must agree. If your selector match labels says app equals web but the template metadata labels says app equals ay-pee-eye, the controller will create pods that it then cannot see — an infinite loop of "I need three pods, I see zero, let me make three more." Kubernetes catches this at admission time and rejects the manifest. Still, it is a real footgun in custom controllers.
+
+Pods created by a replica set get a name like the replica set name, then a dash, then a random suffix. Their metadata owner references field points back to the replica set. That is how the cluster says "this pod belongs to that controller — delete it when the parent is deleted."
+
+The self-healing demo. If we delete a pod that a replica set owns, the controller notices within seconds and creates a replacement. Same template, new name.
+
+Why you almost never write a replica set directly.
+
+Replica sets are great at keeping n pods alive. They are terrible at changing what those pods run. Try to update the image on a replica set and you will find three things.
+
+Editing template dot spec dot containers dot zero dot image on an existing replica set does not restart any pods. The new image only applies to pods created from now on. Existing pods keep running the old image. To actually roll the change out, you would have to delete pods one by one and let the controller recreate them. With three pods that is annoying. With thirty, it is error-prone. And there is no history. Once you have changed the template, the old one is gone — there is no way to go back to last week's version without finding the manifest somewhere.
+
+What you really want is a controller that owns multiple replica sets — one per version — and choreographs the transition from one to the next, with history and a one-command rollback. That is the deployment.
+
+Picture this. At the top sits the deployment, which you write. Below it sit two replica sets — version one with replicas zero, and version two with replicas three. The deployment owns both. The version-two replica set owns three pods, which are the live workload. The version-one replica set is scaled down to zero, kept around for rollback.
+
+You write the deployment. The deployment controller creates a replica set for the current version. The replica set controller creates the pods. When you change the deployment's template, the deployment controller creates a new replica set and gradually scales it up while scaling the old one down. The old replica set sticks around at replicas zero so you can roll back to it.
+
+This three-layer ownership — deployment owns replica sets, replica sets own pods — is one of the most tested topics on the see-kay-ay. Memorise the picture.
+
+Anatomy of a deployment manifest.
+
+A deployment looks almost identical to a replica set — same replicas, selector, and template — plus a few fields that govern how the controller updates pods.
+
+Field by field. Spec dot replicas is the same target count you saw on replica set. The deployment passes this through to the active replica set. Spec dot selector dot match labels must match template dot metadata dot labels. Once set, the selector is immutable on a deployment — you cannot change it after creation. This avoids the orphan-pods problem. Spec dot template is the pod template. This is the field you will change most often, typically to bump an image. Any change here triggers a rollout. Spec dot strategy dot type chooses rolling update, the default gradual replacement, or recreate, which means kill all then start all. We unpack both below.
+
+Spec dot strategy dot rolling update dot max surge controls how many extra pods the controller is allowed to create above replicas during a rollout. Twenty-five percent of four replicas means one extra pod. Spec dot strategy dot rolling update dot max unavailable controls how many of the desired pods can be unavailable at the same time during a rollout. Twenty-five percent of four means at most one down.
+
+Spec dot revision history limit is how many old replica sets to keep around for rollback. It defaults to ten. Spec dot min ready seconds tells the controller — after a new pod is ready, wait this long before treating it as available. Useful when readiness probes are lenient but you want extra confidence. And spec dot progress deadline seconds — if a rollout does not make progress within this long, mark it failed.
+
+Scaling.
+
+Scaling a deployment up or down is a one-field change. The controller does the rest. The imperative form is kubectl scale deployment, the name, dash dash replicas equals five. The declarative form is to edit the manifest, change spec dot replicas, and kubectl apply.
+
+When you change replicas, two things can happen. On scale up, the deployment controller updates the active replica set's replicas. The replica set controller sees more desired than actual and creates the difference. Each new pod goes through pending, container creating, running, and ready. On scale down, the replica set controller sees more actual than desired. It picks pods to delete — preferring not-ready pods, then pods on nodes that already have more replicas of the set, then by creation time. The selected pods receive sig-term, get termination grace period seconds to exit, then sig-kill.
+
+Scaling does not create a new replica set. Same generation, same template, just a different count. Which is why scaling is not considered a rollout and will not show up in kubectl rollout history.
+
+Horizontal pod autoscaler — a glance. Replicas is the manual lever. You can also delegate it to a horizontal pod autoscaler, abbreviated h-p-a. The h-p-a is an object that watches a metric — see-pee-you, memory, or anything from the metrics ay-pee-eye — and updates the deployment's replicas on your behalf. The imperative form is kubectl autoscale deployment, the name, dash dash min two, dash dash max ten, dash dash see-pee-you percent seventy. The h-p-a controller polls the metric every fifteen seconds and adjusts replicas to keep see-pee-you near seventy percent. We will come back to autoscaling properly when we cover resources in notebook seven.
+
+Rolling updates.
+
+The most-used deployment feature is the rollout. You change something — almost always the container image — and kubernetes replaces pods one batch at a time, keeping at least replicas minus max unavailable of them serving traffic the whole time.
+
+The imperative form is kubectl set image, deployment slash web, container name equals new image. Or you edit the manifest in place and apply.
+
+What happens under the hood when the image changes. First, the deployment controller notices spec dot template has a new hash. Second, it creates a new replica set for the new template, starting at replicas zero. Third, it scales the new replica set up by max surge, while scaling the old replica set down by max unavailable, in lockstep. With the default twenty-five percent and twenty-five percent, and four replicas, that means new replica set to one, old to three, wait for the new pod's ready, new to two, old to two, and so on. Fourth, as pods on the new replica set become ready, they take traffic — services route by selector, covered in notebook four. Fifth, when the new replica set has replicas matching the spec and the old has zero, the rollout is complete. Sixth, the old replica set stays around for rollback. Its template is preserved exactly, so undo can recreate the previous state.
+
+Max surge and max unavailable — the trade-off. These two knobs control the speed-versus-safety trade-off of a rollout. Max surge zero, max unavailable one — strictly take one pod down before bringing one up. Conservative. Fits when you cannot spare extra capacity. Max surge one, max unavailable zero — strictly bring one extra pod up before taking any old one down. The "always at full capacity" choice. Max surge twenty-five percent, max unavailable twenty-five percent — the default. Fast. Overlap surge and shutdown. Saves time but briefly uses extra capacity and runs slightly under desired. Both can be either an absolute integer or a percentage of replicas. They cannot both be zero — that would mean no progress allowed.
+
+Watching a rollout. Kubectl rollout status, deployment slash the name, blocks until the rollout finishes or fails. Kubectl get pods dash l with a label, dash w, watches pods come and go. And kubectl describe deployment shows events at the bottom of its output, step by step.
+
+Rollout history and rollback.
+
+Each rollout creates a new replica set, and the deployment keeps a numbered history. Run kubectl rollout history, deployment slash the name, and you will see a list of revisions, each with a change-cause column. To see the spec of a specific revision, add dash dash revision equals the number.
+
+Roll back. If revision two is misbehaving, one command takes you back. Kubectl rollout undo, deployment slash the name, goes back to the immediately previous revision. Adding dash dash to revision equals the number goes back to a specific revision. Undo is just another rollout. It creates a new revision whose template equals the old one, then runs the same rolling-update process to switch to it. So after undo you will see revisions one, two, three — where revision three has the same template as revision one.
+
+Pausing and resuming. For risky rollouts you can pause mid-flight, inspect the partial state, then resume. Kubectl rollout pause, deployment slash the name, means any further template edits will not trigger a rollout. Make a batch of changes. Then kubectl rollout resume ships all the queued changes as one rollout.
+
+The change-cause annotation. The change-cause column is read from the kubernetes dot eye-o slash change cause annotation. Set it when you ship to leave breadcrumbs for future you. Kubectl annotate, deployment slash web, kubernetes dot eye-o slash change cause equals your message in quotes. Anything that triggers a new revision after the annotation is set inherits that change cause.
+
+Update strategies — rolling update versus recreate.
+
+A deployment's spec dot strategy dot type chooses between two algorithms.
+
+Rolling update, the default, is what we just walked through. The new replica set scales up while the old one scales down, governed by max surge and max unavailable. No downtime, provided your app handles sig-term cleanly and your readiness probe is honest.
+
+Recreate. The old replica set is scaled to zero first, then the new one is scaled up. There will be a window with zero pods. Use this when the new version cannot coexist with the old, for example incompatible database schema migrations or conflicting filesystem state. Or when you are using a read write once persistent volume that only one pod can mount at a time, which we cover in notebook six. Or when you are using a host port and cannot have two pods on the same node briefly competing for it.
+
+Recreate is the simpler algorithm. Rolling update is the production default. The see-kay-ay expects you to know both names and the kind of situation that argues for recreate.
+
+What triggers a rollout. A rollout fires whenever spec dot template changes. That includes changing a container image, an environment variable, a command, arguments, a volume mount, a resource, a probe, a security context — anything inside template. Changing the labels on the pod template, carefully, so the selector and template labels still match. And adding or removing a container, init container, or volume.
+
+A rollout does not fire when you change spec dot replicas. That is a scale, not a rollout. It does not fire when you change deployment-level fields outside spec dot template — like strategy, revision history limit, or progress deadline seconds. And it does not fire when you change metadata dot labels on the deployment itself, as opposed to the template.
+
+If you ever want to force a rollout without changing the template — for example to make pods pick up a new config map value, in notebook five — the canonical trick is to bump an annotation in the template using kubectl patch.
+
+The rest of the workload family.
+
+Deployments cover stateless services, the most common case. But kubernetes ships four other workload controllers, each for a specific shape of workload.
+
+Daemon set — one pod per node. The daemon set controller ensures exactly one copy of a pod runs on every node that matches a selector. Add a node, a pod appears on it. Remove a node, its pod is gone. Use it for node-level agents — log shippers like fluent bit or vector, metrics agents like node exporter or the datadog agent, networking and storage plugins like the container network interface agent and the container storage interface node driver, and security agents like falco. You will see daemon sets in the wild in the kube system namespace — kube proxy and the container network interface plugin both run as daemon sets.
+
+Stateful set — pods with identity and storage that survive restarts. A deployment treats pods as interchangeable. A stateful set treats pods as ordinals — pod zero, pod one, pod two — each with a stable name, a stable network identity, and its own persistent volume that follows it across restarts. Use it for stateful systems where the identity matters — databases like postgres or my-s-q-l primary and replica setups, distributed datastores like cassandra, elasticsearch, or kafka brokers, and consensus systems like et-see-dee and zookeeper. The stateful set's network identity is delivered through a headless service, which is covered in notebook four. Its storage comes through volume claim templates, which is covered in notebook six.
+
+Job — run a pod to completion. A job creates one or more pods and watches them until they exit successfully. If a pod fails, the job retries, subject to back-off limit. Use it for batch work — one-off database migrations, nightly report generation, e-t-l pipelines. A job's pod template defaults to restart policy on failure. Set spec dot parallelism to run multiple pods in parallel, and spec dot completions for "I want n successful pods before declaring victory."
+
+Cron job — a job, on a schedule. A cron job is exactly what it sounds like — a job templated to fire on a cron schedule. Use it for periodic batch work — backups, log rotation, cache warmers, recurring reports. Cron jobs handle missed runs, concurrent runs, and history cleanup — knobs we will meet alongside jobs later.
+
+Picking the right controller. A small flowchart in your head. First question — does the workload run forever? If no, is it one-shot or scheduled? Once is a job. On a schedule is a cron job. If yes, ask — does it need stable identity and per-pod storage? If yes, stateful set. If no, ask — does it need exactly one copy per node? If yes, daemon set. If no, deployment. For the see-kay-ay, deployment is the answer most of the time. Reach for the others only when the question describes the specific shape they fit.
+
+Cleaning up.
+
+Delete everything this notebook created so the cluster is tidy for notebook four. Run kubectl delete deployment web, then kubectl delete replica set web dash r-s. Or, more broadly, kubectl delete deployment, comma, replica set, dash dash all, to wipe every deployment and replica set in the default namespace. Note — deleting a deployment deletes its replica sets, which deletes their pods. Owner references cascade by default. So one kubectl delete deployment web cleans the whole tree.

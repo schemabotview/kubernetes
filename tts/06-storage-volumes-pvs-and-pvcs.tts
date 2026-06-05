@@ -1,0 +1,147 @@
+Storage — volumes, persistent volumes, and persistent volume claims.
+
+What is covered. This notebook walks through why storage matters — the container filesystem is ephemeral, and restarts wipe it. Volumes — spec dot volumes plus volume mounts, the union model that ties storage to containers. Ephemeral volume types — empty dir, host path, and projected — what each is for and what makes host path dangerous. The persistent storage abstraction — persistent volume, persistent volume claim, and storage class, and why decoupling them is the whole point. Access modes and volume modes — read write once, read only many, read write many, read write once pod, and filesystem versus block. Storage class — dynamic provisioning, default classes, and provisioners. Reclaim policies — retain, delete, and the deprecated recycle. The container storage interface, often abbreviated as see-ess-eye — how kubernetes talks to storage backends without knowing what they are. Stateful sets with volume claim templates — the canonical way to give every pod its own persistent volume claim. And resizing persistent volume claims — when it works and when it does not.
+
+By the end of this notebook you should be able to attach scratch space to a pod, request real persistent storage with a single yaml file, understand exactly what binding means, and explain why every database in kubernetes uses a stateful set plus volume claim templates instead of a deployment. Notebooks two and three are the prerequisites — pod manifests and deployments — because every storage manifest plugs into a pod template.
+
+Why storage matters.
+
+When a container exits and the kube-let restarts it, the container's filesystem is wiped. Specifically — the image's read-only layers stay, because they are cached on the node. But the container's writable top layer is deleted when the container is removed.
+
+That is by design. Containers are supposed to be cattle, not pets. But it means anything the application wrote to slash var slash lib slash postgres, slash data, or any other "let me just save this here" path is gone the moment the container restarts. Including database files, restarts wipe your data. Uploaded user files, restarts wipe your uploads. Caches, restarts wipe your caches — sometimes desirable, sometimes not. Even log files, if anything was reading them off disk.
+
+You need storage that outlives the container. Kubernetes offers two levels.
+
+Pod-lifetime storage. A volume that lives as long as the pod does. Shared between containers in the pod, deleted with the pod. Examples are empty dir, config map as a volume, and secret as a volume. Good for scratch space, inter-process communication between sidecars, and mounted config.
+
+Cluster-lifetime storage. A volume backed by something external to the cluster — a cloud disk, an n-f-s server, a storage area network logical unit — that survives pod deletion, node failure, and rescheduling. This is what the persistent volume and persistent volume claim abstraction gives you.
+
+For each workload, the question is "how long should the data live?" — and the answer picks the volume type.
+
+Volumes — the basics.
+
+A pod can declare a list of volumes under spec dot volumes. Each container can mount any of those volumes under volume mounts. The connection between the two is by name. The pod declares a volume named scratch with type empty dir. A container inside the pod has a volume mount referencing the name scratch and a mount path of slash workspace. That is it.
+
+Two things to internalise.
+
+The volume is declared on the pod, and mounted into the container. That is how multiple containers share a volume — the sidecar pattern from notebook two. Both containers declare a volume mount referencing the same volumes name.
+
+A "volume type" is a single key under the volume entry. Empty dir, host path, config map, secret, persistent volume claim — each volume entry uses exactly one of these type keys.
+
+The mount itself supports a few useful knobs. Read only true mounts the volume read only. Sub path mounts only a sub-path of the volume at the target. We met this in notebook five — the "does not live-update" gotcha. And mount propagation, for advanced cases like see-ess-eye drivers and host filesystem sharing. Rarely set by hand.
+
+The volume types fall into two big groups. Ephemeral, which live with the pod. And persistent, which outlive the pod and are backed by a persistent volume. The rest of this notebook walks both.
+
+Ephemeral volume types.
+
+Empty dir — scratch space shared in the pod. A brand-new empty directory created when the pod is scheduled and deleted when the pod is removed. No persistence. Restarts of the container keep it. Rescheduling the pod to a new node wipes it.
+
+By default, empty dir is backed by the node's disk. You can also set medium to memory, which makes it tmp file system — r-ay-m backed, fast, and it counts against memory limits. You can set a size limit too.
+
+Use it for inter-process communication between sidecars, like the log-shipper pattern from notebook two. For scratch space that is faster than slash tmp and isolated per pod. And for buffers for processes that genuinely do not need durability.
+
+Host path — a path on the node, mounted into the pod. You specify a path on the host and an optional type — for example, directory, file, or socket — which the kube-let validates before mounting.
+
+Host path is a footgun. It punches a hole through the pod's isolation, exposes node internals, makes the pod non-portable, and is a security anti-pattern. The legitimate uses are narrow. Node-level agents — the daemon set pattern from notebook three — that need to read host paths, such as log shippers reading slash var slash log, metrics agents reading slash proc, or container network interface plugins writing slash e-t-c slash c-n-i slash net dot dee. Cluster-bootstrap tooling. And local development on a single-node cluster where simplicity matters more than safety.
+
+For everything else, including persistence, use a persistent volume. Host path ties the pod's data to one specific node. The next time the scheduler picks a different node, the data is gone.
+
+Projected — combining multiple sources into one mount. A projected volume mounts several config maps, secrets, and downward ay-pee-eye items into the same directory. Useful when an app expects all its config under one path — slash e-t-c slash app — but the data comes from different sources.
+
+Plus the config map, secret, and downward ay-pee-eye volumes you already met from notebook five. They behave like ephemeral volumes — they live with the pod, with content materialised by the kube-let at mount time.
+
+The persistent storage abstraction.
+
+For storage that outlives the pod, kubernetes splits the problem in two. The storage administrator provisions storage and exposes it as a persistent volume — a cluster-scoped object that represents a piece of physical storage, like a twenty gigabyte cloud disk, an n-f-s share, or a directory on a node. The application author asks for storage by writing a persistent volume claim — a namespaced object that says "I want five gibibytes of read write once storage from the fast s-s-d class."
+
+A controller binds the two together. The pod references the persistent volume claim by name. The persistent volume claim is bound to a persistent volume. The persistent volume is the actual disk.
+
+Picture this. A pod references a persistent volume claim, which is bound to a persistent volume, which is one piece of real storage. The persistent volume claim is namespace-scoped and asks for "n gibibytes." The persistent volume is cluster-scoped and says "here is the disk."
+
+The decoupling matters. The app says what it needs — size, access mode, class. The persistent volume says what is available — size, access mode, backend. The binding controller matches them. Apps do not know whether they are getting an e-b-s volume, an n-f-s share, or a ceph r-b-d. And they do not have to.
+
+Two ways the persistent volume side gets created.
+
+Static provisioning. A cluster admin pre-creates persistent volume objects ahead of time. Persistent volume claims bind to whichever pre-existing persistent volume best fits. Useful for hand-curated storage — a corporate n-f-s server, an on-prem storage area network.
+
+Dynamic provisioning. The admin creates a storage class describing how to make a disk. Persistent volume claims reference the class, and a controller — the see-ess-eye external provisioner for that backend — creates a new persistent volume on demand. The everyday case in cloud clusters.
+
+For dynamic provisioning to work, the cluster needs a storage class. Most managed kubernetes services ship one as the default. On kind, the default is a small provisioner called local path that creates a directory on the node. Fine for learning, not for production.
+
+Access modes and volume modes.
+
+A persistent volume claim says how the workload wants to use the volume. Two orthogonal axes.
+
+Access modes. Read write once, code are-double-you-oh — one node can mount it read write. The default and most common. Pods on the same node can share it. Read only many, code are-oh-ex — many nodes can mount it read only. Rare. Read write many, code are-double-you-ex — many nodes can mount it read write. Requires a backend that supports it, like n-f-s, ceph-f-s, or azure files. Not supported by cloud block storage like e-b-s or persistent disk. And read write once pod, code are-double-you-oh-pee — only one pod in the entire cluster can mount it. Stronger than read write once, available in kubernetes version one point twenty-seven and later.
+
+A persistent volume claim requests one or more access modes. The bound persistent volume must support at least one of them. For cloud block storage — e-b-s, gee-see-ee persistent disk, azure disk — you get read write once by default. That is why a deployment with one persistent volume claim will not easily scale to two replicas. The second replica scheduled on a different node cannot mount the same read write once disk.
+
+Volume modes. Filesystem, the default — the volume is formatted and mounted at the mount path. Files and directories. And block — the volume is exposed as a raw block device. The container sees a slash dev slash x-v-d-a-like device. Used by databases that manage their own on-disk format — some cassandra setups, raw key-value stores.
+
+Ninety-nine percent of workloads want filesystem. Block mode is there when you have an app that wants raw devices.
+
+Storage class — dynamic provisioning.
+
+A storage class is the recipe for "how do you make a new disk."
+
+The fields that matter day-to-day. Provisioner names which see-ess-eye driver to use. The cluster has these installed and you reference them. Common ones are e-b-s dot see-ess-eye dot ay-double-you-ess dot com, pee-dee dot see-ess-eye dot storage dot gee-kay-ee dot eye-o, disk dot see-ess-eye dot azure dot com, n-f-s dot see-ess-eye dot k-eight-s dot eye-o, and rancher dot eye-o slash local path on kind. Parameters are driver-specific. The e-b-s driver takes type, eye-oh-pee-s, and encrypted. The n-f-s driver takes server and share.
+
+Reclaim policy, covered below, is almost always delete for dynamically-provisioned classes, and retain for hand-curated ones. Volume binding mode is either immediate, the default, which picks a persistent volume when the claim is created. Or wait for first consumer, which waits until a pod schedules, then provisions the disk in the pod's zone. Use wait for first consumer whenever the storage is zonal — otherwise you risk creating a disk in one zone and scheduling the pod in another. And allow volume expansion is set to true if the driver supports online resize. Most cloud drivers do.
+
+A persistent volume claim picks a class by name with the storage class name field. If you omit it, the cluster's default storage class is used. If there is no default and you omit the field, the claim stays unbound until you add one.
+
+Listing what your cluster has. Kubectl get storage class lists what is installed. Kubectl get s-c is the short alias. And kubectl describe s-c with a name shows the parameters, the provisioner, and the options. On kind you will see standard, or local path, marked default — that is the local path provisioner shipping by default.
+
+Reclaim policies.
+
+When you delete a persistent volume claim, the bound persistent volume's reclaim policy decides the fate of the underlying disk.
+
+Delete — delete the underlying disk. The persistent volume object is removed too. Data is gone. The default for dynamically-provisioned persistent volumes. Retain — keep the disk and the persistent volume object. The persistent volume becomes released, not available. An admin has to clean it up before another claim can bind. Use this for hand-curated, valuable storage. And recycle — deprecated. Used to wipe the volume and make it available again. Do not use. Use dynamic provisioning instead.
+
+Where the policy comes from. For dynamically-provisioned persistent volumes, the policy is inherited from the storage class — typically delete. For statically-provisioned persistent volumes, you set the policy on the persistent volume object directly.
+
+You can switch a persistent volume's policy with kubectl patch, setting persistent volume reclaim policy to retain. Worth doing on the persistent volume that holds your prod database, even if the storage class says delete — defence in depth against an accidental persistent volume claim deletion.
+
+Released versus available. When a persistent volume is reclaimed with retain, it goes to released. It is not bound to a claim, but it still has the leftover data and a claim ref pointing at the deleted claim. To make it usable again, an admin removes the claim ref. Until then, no new claim will bind to it.
+
+The container storage interface.
+
+Kubernetes does not know how to create a disk on ay-double-you-ess, or mount an n-f-s share, or attach a ceph r-b-d. The work is done by see-ess-eye drivers — plugins installed in the cluster that implement a standard gee-are-pee-see interface.
+
+A see-ess-eye driver is two parts. A controller, which is a deployment that talks to the storage backend's ay-pee-eye. Creates and deletes volumes, takes snapshots, expands disks. And a node component, which is a daemon set running on every node. Attaches volumes to the node and mounts them into the pod's filesystem.
+
+The big idea — every storage backend speaks the same see-ess-eye gee-are-pee-see, so kubernetes itself stays storage-agnostic. Each backend — ay-double-you-ess, gee-see-pee, azure, n-f-s, ceph, portworx, longhorn, host path, local path — ships its own driver.
+
+You will rarely write see-ess-eye code. What matters for the see-kay-ay. Drivers are typically helm-installed at cluster setup time, and you reference them by provisioner name in your storage class. Kubectl get see-ess-eye drivers lists what is installed. Kubectl get see-ess-eye nodes shows which drivers each node has registered. And snapshots, clones, and expansion are all see-ess-eye-driven features. The driver decides which are supported.
+
+In-tree versus out-of-tree. Older kubernetes shipped storage drivers in-tree, built into the kube-let. They have been deprecated. Every cloud provider now ships a see-ess-eye driver instead. New clusters install drivers as separate pods. You may still encounter older volume dot beta dot kubernetes dot eye-o slash storage provisioner annotations on legacy clusters. Treat them as the same idea, older mechanism.
+
+Stateful sets and volume claim templates.
+
+You met stateful set briefly in notebook three — pods with stable identity, like pod zero and pod one. The storage part of that story is volume claim templates.
+
+A deployment shares its pod template across all replicas. If you put a persistent volume claim reference in a deployment's template, every replica mounts the same persistent volume claim. And that claim can usually only be read write once mounted on one node, so you cannot scale past one replica.
+
+A stateful set solves this. Instead of spec dot volumes holding one persistent volume claim reference, you write a volume claim template. The stateful set lists volume claim templates with each having its own metadata name and spec — access modes, resources, requests, storage size.
+
+What the controller does. For each replica i from zero to replicas minus one, it creates a persistent volume claim named template name dash stateful set name dash i — so data dash cassandra dash zero, data dash cassandra dash one, data dash cassandra dash two. Each claim binds to its own persistent volume. Each pod mounts its own claim at the mount path. If a pod is restarted or rescheduled, the claim stays. The new pod zero mounts the same data cassandra zero as before. Stable identity, stable storage.
+
+Deletion behaviour. Deleting the stateful set does not delete the persistent volume claims. That is deliberate — your data is precious. To clean up the claims you delete them manually with kubectl delete p-v-c followed by a label selector. Kubernetes one point twenty-seven and later added persistent volume claim retention policy on the stateful set spec to opt in to cascade deletion. Read the docs and choose deliberately.
+
+Why every database in kubernetes uses this. Stable name — cassandra zero. Stable network identity — cassandra zero dot cassandra dot default dot s-v-c dot cluster dot local, via the headless service. Stable storage — data cassandra zero. That triplet is exactly what a database replica needs.
+
+Resizing persistent volume claims.
+
+You requested ten gibibytes. It is full. You want twenty. If your storage class has allow volume expansion set to true, and your see-ess-eye driver supports it, run kubectl patch on the claim, increasing spec dot resources dot requests dot storage to the new size. Or kubectl edit on the claim.
+
+The controller resizes the underlying disk, then the kube-let expands the filesystem inside the pod — online for most modern filesystems, no restart needed.
+
+A few constraints. You can only grow, not shrink. Smaller is rejected by the ay-pee-eye server. Not every driver supports it. Kind's local path does not. Cloud drivers usually do. The claim has a file system resize pending condition until the filesystem-side expansion completes. Kubectl describe p-v-c shows it.
+
+If allow volume expansion is false on the storage class, the ay-pee-eye server rejects the patch. The fix is to edit the storage class, or use a different one, and recreate the claim — which means data migration, not a one-liner.
+
+Cleaning up.
+
+Delete everything this notebook created so the cluster is tidy for notebook seven. Run kubectl delete pod shared scratch and p-v-c writer. Kubectl delete stateful set cache. Kubectl delete service cache. And kubectl delete p-v-c with the claim names — data, data cache zero, and data cache one.
+
+The persistent volumes themselves go too. Local path's reclaim policy is delete by default, so deleting the claims cleans up the disks. Or, more broadly, kubectl delete pod, comma, p-v-c, comma, stateful set, dash dash all.

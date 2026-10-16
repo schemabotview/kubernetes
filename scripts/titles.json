@@ -4,5 +4,6 @@
   "api-objects": "Kubernetes Objects, kubectl Apply and Labels Explained",
   "pods": "Kubernetes Pods Explained: Lifecycle, Probes and Termination",
   "controllers": "Kubernetes Deployments, Jobs, CronJobs and DaemonSets Explained",
-  "configuration": "Kubernetes ConfigMaps, Secrets and Service Accounts Explained"
+  "configuration": "Kubernetes ConfigMaps, Secrets and Service Accounts Explained",
+  "networking": "Kubernetes Services, DNS, Ingress and Gateway API Explained"
 }

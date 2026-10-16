@@ -1,6 +1,7 @@
 import { reconciliation } from './reconciliation'
 import { apiObjects } from './api-objects'
 import { pods } from './pods'
+import { controllers } from './controllers'
 import type { Course, Section } from './types'
 
 // Course registry, in syllabus order — one course per chapter of KUBERNETES-COURSE-PLAN.md.
@@ -9,6 +10,7 @@ export const COURSES: Record<string, Course> = {
   [reconciliation.id]: reconciliation,
   [apiObjects.id]: apiObjects,
   [pods.id]: pods,
+  [controllers.id]: controllers,
 }
 
 export type { Course, Section }

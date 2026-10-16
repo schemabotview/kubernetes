@@ -7,5 +7,6 @@
   "configuration": "Kubernetes ConfigMaps, Secrets and Service Accounts Explained",
   "networking": "Kubernetes Services, DNS, Ingress and Gateway API Explained",
   "storage": "Kubernetes Persistent Volumes, StatefulSets and Backups Explained",
-  "scheduling": "Kubernetes Requests, Limits, Scheduling and Autoscaling Explained"
+  "scheduling": "Kubernetes Requests, Limits, Scheduling and Autoscaling Explained",
+  "security": "Kubernetes Security: RBAC, Pod Security and NetworkPolicy Explained"
 }

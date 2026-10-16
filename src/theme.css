@@ -1,0 +1,10 @@
+/* This repo's whole design surface — the three tokens @graphlearning/shell leaves to the repo.
+   Imported AFTER the shell's stylesheet in main.tsx, so these win the cascade.
+
+   --brand is the Kubernetes identity blue (the catalog card and the thumbnail gradient use the same
+   anchor, so app and catalog match); --accent-2 is a warm amber counter tone for `###` subheads. */
+:root {
+  --brand: #326ce5; /* the subject's identity colour */
+  --brand-hover: #7098ed; /* a lighter tint — the eyebrow's hover state */
+  --accent-2: #fbbf24; /* the counter tone — the slide's `###` subheading */
+}

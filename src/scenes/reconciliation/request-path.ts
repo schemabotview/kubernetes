@@ -1,7 +1,7 @@
 import type { Scene } from '@graphlearning/flow'
 
 // §4 — the path from `kubectl apply` to a running container. Every component talks to the API
-// server and none to each other; the badges give the order. The watchers and the node are bands so
+// server and none to each other; the slide gives the order. The watchers and the node are bands so
 // the board stacks toward the pane's ~1:1 aspect instead of fanning out into one wide row.
 export const requestPath: Scene = {
   id: 'request-path',

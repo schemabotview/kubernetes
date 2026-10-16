@@ -40,7 +40,21 @@ per section). The commands pass on frames that are visually wrong; the rendered 
 
 ## Status
 
-| course | sections | state |
+All 13 courses (88 sections) are authored: scenes, slides and narration text. **No narration audio
+has been generated yet** — that is one Colab + Chatterbox pass per course after review.
+
+| # | course | sections |
 | --- | --- | --- |
-| `reconciliation` — Orchestration, Clusters, and Reconciliation | 6 | authored; awaiting review, then audio |
-| 12 further courses | 82 | planned — see `AUTHORING-PLAN.md` |
+| 1 | `reconciliation` — Orchestration, Clusters, and Reconciliation | 6 |
+| 2 | `api-objects` — The Kubernetes API and Safe Object Workflows | 7 |
+| 3 | `pods` — Pods and Application Execution | 7 |
+| 4 | `controllers` — Workload Controllers and Replacement | 7 |
+| 5 | `configuration` — Configuration, Secrets, and Application Dependencies | 6 |
+| 6 | `networking` — Services, DNS, and External Traffic | 7 |
+| 7 | `storage` — Persistent State and Stateful Workloads | 7 |
+| 8 | `scheduling` — Scheduling, Resources, and Scaling | 7 |
+| 9 | `security` — Identity, Policy, and Workload Security | 7 |
+| 10 | `releases` — Repeatable Releases and Configuration Management | 7 |
+| 11 | `diagnosis` — Observability and Evidence-Led Diagnosis | 7 |
+| 12 | `lifecycle` — Cluster Lifecycle, Availability, and Recovery | 7 |
+| 13 | `extensibility` — Extending Kubernetes and Operating the Whole System | 6 |

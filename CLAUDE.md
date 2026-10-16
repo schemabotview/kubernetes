@@ -26,7 +26,18 @@ Section ids are permanent once a course has wavs — audio resolves by id alone.
 | # | course | status | scenes (`src/scenes/<course>/`) |
 | --- | --- | --- | --- |
 | 1 | `reconciliation` | authored, no audio | orchestration-scope · reconcile-loop · cluster-anatomy · request-path · build-vs-run · environments |
-| 2–13 | see `AUTHORING-PLAN.md` §1 | not started | — |
+| 2 | `api-objects` | authored, no audio | kubeconfig-target · gvk · object-anatomy · label-selection · apply-ownership · owner-chain · inspect-cleanup |
+| 3 | `pods` | authored, no audio | pod-boundary · pod-states · image-pull · container-spec · init-sidecar · probes · termination |
+| 4 | `controllers` | authored, no audio | deployment-tree · replacement · rollout · job-retry · cronjob-rules · daemonset-spread · controller-choice |
+| 5 | `configuration` | authored, no audio | config-layers · configmap-paths · secret-limits · propagation · projected-identity · dependency-behaviour |
+| 6 | `networking` | authored, no audio | pod-network · service-endpoints · dns-names · service-types · ingress-model · gateway-roles · request-trace |
+| 7 | `storage` | authored, no audio | volume-lifetimes · claim-binding · dynamic-provisioning · access-reclaim · stateful-identity · backup-kinds · state-placement |
+| 8 | `scheduling` | authored, no audio | resource-effects · node-capacity · placement-rules · spread-domains · namespace-limits · hpa-loop · autoscaler-kinds |
+| 9 | `security` | authored, no audio | api-gates · identity-kinds · rbac-scope · pod-hardening · network-policies · secret-duties · supply-and-tenancy |
+| 10 | `releases` | authored, no audio | artifact-promotion · kustomize-overlays · helm-model · rollout-health · rollback-scope · delivery-models · competing-writers |
+| 11 | `diagnosis` | authored, no audio | evidence-sources · latency-signal · request-spans · debug-tools · network-checks · failure-signatures · incident-record |
+| 12 | `lifecycle` | authored, no audio | responsibility-table · drain-flow · disruption-budget · control-plane-ha · upgrade-plan · recovery-inventory · restore-runbook |
+| 13 | `extensibility` | authored, no audio | custom-resource · operator-loop · webhook-path · extension-review · system-review · next-steps |
 
 Recurring example throughout: the catalogue API, its PostgreSQL database and the import Job, in one
 learning namespace. Manifests and outputs on code cards are **illustrative** and say so — no
@@ -106,6 +117,9 @@ Measured in this repo (flow 1.3, shell 0.8 — `AUTHORING-PLAN.md` §3 has the d
 - Slides need ~2–3 `###` groups and 8–11 bullets for 80 %.
 - `check` over-models **ordered lists** by ~150–200px; OL-heavy slides top out near 78 %.
 - A leaf's `badge` does not render — put step numbers somewhere else.
+- First-draft slides of 3 groups / ~9 bullets model at ~870px and render at ~75 %. Draft to ~11
+  bullets (model 950–990) and they land at 82–88 %.
+- Code cards highlight `--` as a comment, so `kubectl … --flag` lines render dimmed. Engine-side.
 
 ## Guards before handing over
 

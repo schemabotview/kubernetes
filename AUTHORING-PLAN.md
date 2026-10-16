@@ -18,20 +18,21 @@ plan says *what* to teach; this file says *how it is authored, measured and hand
 | # | course id | sections (ids) | dominant scene shape |
 | --- | --- | --- | --- |
 | 1 | `reconciliation` ✅ | orchestration-scope · desired-vs-observed · control-plane-and-nodes · component-path · cri-vs-image-tools · environments | bands of 2×2 leaves; hub-and-spoke |
-| 2 | `api-objects` | kubeconfig-contexts · groups-versions-kinds · metadata-spec-status · labels-and-selectors · declarative-apply · owners-and-finalizers · inspect-and-cleanup | code card over a band |
-| 3 | `pods` | pod-boundaries · lifecycle-states · image-pulls · commands-and-requests · init-and-sidecars · probes · termination | lifecycle timeline; code card |
-| 4 | `controllers` | deployment-ownership · replicas · rollouts · jobs · cronjobs · daemonsets · choosing-a-controller | ownership tree; 2×2 comparison lists |
-| 5 | `configuration` | image-vs-config · configmaps · secrets · update-propagation · service-accounts · dependency-handling | code card + mount path |
-| 6 | `networking` | pod-networking · services-and-endpointslices · dns · service-types · ingress · gateway-api · tls-and-diagnosis | request path, top to bottom |
-| 7 | `storage` | ephemeral-volumes · pv-and-pvc · storageclasses-csi · access-and-reclaim · statefulsets · backup-and-restore · managed-state | claim → volume → driver chain |
-| 8 | `scheduling` | requests-and-limits · capacity-and-pending · affinity-and-taints · topology-spread · quotas-and-limitranges · horizontal-autoscaling · vertical-and-node-autoscaling | node-capacity `table`; plots |
-| 9 | `security` | authn-authz-admission · identities · rbac · security-contexts · network-policy · secret-protection · image-trust-and-tenancy | request through gates |
-| 10 | `releases` | digests-and-manifests · kustomize · helm · rollout-evidence · rollback-limits · ci-vs-gitops · drift-and-ownership | overlay stack; two writers |
-| 11 | `diagnosis` | logs-events-status · metrics · tracing · debugging-pods · network-diagnosis · storage-and-scheduling-diagnosis · incident-evidence | symptom → evidence → hypothesis |
-| 12 | `lifecycle` | responsibility-models · cordon-and-drain · disruption-budgets · control-plane-availability · upgrades-and-skew · backup-scope · recovery-runbooks | responsibility `table`; failure domains |
-| 13 | `extensibility` | crds · operators · admission-webhooks · ecosystem-selection · end-to-end-review · limits-and-next-steps | CR → controller → workloads; whole system |
+| 2 | `api-objects` ✅ | kubeconfig-contexts · groups-versions-kinds · metadata-spec-status · labels-and-selectors · declarative-apply · owners-and-finalizers · inspect-and-cleanup | code card over a band |
+| 3 | `pods` ✅ | pod-boundaries · lifecycle-states · image-pulls · commands-and-requests · init-and-sidecars · probes · termination | lifecycle timeline; code card |
+| 4 | `controllers` ✅ | deployment-ownership · replicas · rollouts · jobs · cronjobs · daemonsets · choosing-a-controller | ownership tree; 2×2 comparison lists |
+| 5 | `configuration` ✅ | image-vs-config · configmaps · secrets · update-propagation · service-accounts · dependency-handling | code card + mount path |
+| 6 | `networking` ✅ | pod-networking · services-and-endpointslices · dns · service-types · ingress · gateway-api · tls-and-diagnosis | request path, top to bottom |
+| 7 | `storage` ✅ | ephemeral-volumes · pv-and-pvc · storageclasses-csi · access-and-reclaim · statefulsets · backup-and-restore · managed-state | claim → volume → driver chain |
+| 8 | `scheduling` ✅ | requests-and-limits · capacity-and-pending · affinity-and-taints · topology-spread · quotas-and-limitranges · horizontal-autoscaling · vertical-and-node-autoscaling | node-capacity `table`; plots |
+| 9 | `security` ✅ | authn-authz-admission · identities · rbac · security-contexts · network-policy · secret-protection · image-trust-and-tenancy | request through gates |
+| 10 | `releases` ✅ | digests-and-manifests · kustomize · helm · rollout-evidence · rollback-limits · ci-vs-gitops · drift-and-ownership | overlay stack; two writers |
+| 11 | `diagnosis` ✅ | logs-events-status · metrics · tracing · debugging-pods · network-diagnosis · storage-and-scheduling-diagnosis · incident-evidence | symptom → evidence → hypothesis |
+| 12 | `lifecycle` ✅ | responsibility-models · cordon-and-drain · disruption-budgets · control-plane-availability · upgrades-and-skew · backup-scope · recovery-runbooks | responsibility `table`; failure domains |
+| 13 | `extensibility` ✅ | crds · operators · admission-webhooks · ecosystem-selection · end-to-end-review · limits-and-next-steps | CR → controller → workloads; whole system |
 
-Section ids are proposals; they become permanent once a course has wavs (audio resolves by id).
+✅ = authored (scenes, slides, narration text). Section ids are as listed; they become permanent
+once a course has wavs (audio resolves by id). No audio has been generated yet.
 
 ## 2. The unit of work
 
@@ -102,6 +103,18 @@ Rules taken from it, for the remaining 82 sections:
   container badge.
 - **`bind` is not a real lever** — it is `1 / (1 + padding)`. The levers are area and eyebrow.
 
+### Full sweep after all 13 courses
+
+77 of 88 sections on every target. The 11 misses:
+
+| kind | sections | why |
+| --- | --- | --- |
+| at the 80 % floor (rounding) | 4.5, 5.5, 7.5, 8.5, 10.3, 12.2 | read as 80 %, a fraction under |
+| slide capped by `check` | 1.4 (78), 3.5 (75), 9.3 (78), 10.2 (78) | model over-predicts chip/OL-heavy slides by 80–150 px; one more bullet fails `check` |
+| scene area | 1.5 (0.53) | deliberately tall board, height-bound |
+
+None overflows; none has a node under the eyebrow or an edge label on a card.
+
 ## 4. Sequencing and review
 
 - Chapters in course-plan order — each chapter's bridge assumes the previous one.
@@ -120,3 +133,6 @@ Rules taken from it, for the remaining 82 sections:
 4. **Course plan cross-references** — `KUBERNETES-COURSE-PLAN.md` points at "README.md" for access
    limits and coverage tracking; that content does not exist in this repo yet.
 5. **Brand** — `--brand: #326ce5`, `--accent-2: #fbbf24`; confirm or replace.
+6. **Code-card highlighting** — the engine tokenises `--` as a comment, so kubectl flags on code
+   cards (§2.5, §2.7, §11.4) render dimmed like comments. Needs an engine fix, not content.
+7. **Audio** — the Colab + Chatterbox pass for all 13 courses, after review.

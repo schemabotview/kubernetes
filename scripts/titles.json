@@ -11,5 +11,6 @@
   "security": "Kubernetes Security: RBAC, Pod Security and NetworkPolicy Explained",
   "releases": "Kubernetes Releases: Kustomize, Helm, Rollbacks and GitOps Explained",
   "diagnosis": "Kubernetes Troubleshooting: Logs, Events, Metrics and Debugging",
-  "lifecycle": "Kubernetes Cluster Upgrades, Node Drains and Disaster Recovery"
+  "lifecycle": "Kubernetes Cluster Upgrades, Node Drains and Disaster Recovery",
+  "extensibility": "Kubernetes CRDs, Operators and Admission Webhooks Explained"
 }

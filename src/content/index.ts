@@ -10,6 +10,7 @@ import { security } from './security'
 import { releases } from './releases'
 import { diagnosis } from './diagnosis'
 import { lifecycle } from './lifecycle'
+import { extensibility } from './extensibility'
 import type { Course, Section } from './types'
 
 // Course registry, in syllabus order — one course per chapter of KUBERNETES-COURSE-PLAN.md.
@@ -27,6 +28,7 @@ export const COURSES: Record<string, Course> = {
   [releases.id]: releases,
   [diagnosis.id]: diagnosis,
   [lifecycle.id]: lifecycle,
+  [extensibility.id]: extensibility,
 }
 
 export type { Course, Section }

@@ -6,5 +6,6 @@
   "controllers": "Kubernetes Deployments, Jobs, CronJobs and DaemonSets Explained",
   "configuration": "Kubernetes ConfigMaps, Secrets and Service Accounts Explained",
   "networking": "Kubernetes Services, DNS, Ingress and Gateway API Explained",
-  "storage": "Kubernetes Persistent Volumes, StatefulSets and Backups Explained"
+  "storage": "Kubernetes Persistent Volumes, StatefulSets and Backups Explained",
+  "scheduling": "Kubernetes Requests, Limits, Scheduling and Autoscaling Explained"
 }

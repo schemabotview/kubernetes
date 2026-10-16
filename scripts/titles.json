@@ -3,5 +3,6 @@
   "reconciliation": "How Kubernetes Works: Desired State and Reconciliation",
   "api-objects": "Kubernetes Objects, kubectl Apply and Labels Explained",
   "pods": "Kubernetes Pods Explained: Lifecycle, Probes and Termination",
-  "controllers": "Kubernetes Deployments, Jobs, CronJobs and DaemonSets Explained"
+  "controllers": "Kubernetes Deployments, Jobs, CronJobs and DaemonSets Explained",
+  "configuration": "Kubernetes ConfigMaps, Secrets and Service Accounts Explained"
 }

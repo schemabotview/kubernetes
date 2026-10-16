@@ -8,6 +8,7 @@ import { storage } from './storage'
 import { scheduling } from './scheduling'
 import { security } from './security'
 import { releases } from './releases'
+import { diagnosis } from './diagnosis'
 import type { Course, Section } from './types'
 
 // Course registry, in syllabus order — one course per chapter of KUBERNETES-COURSE-PLAN.md.
@@ -23,6 +24,7 @@ export const COURSES: Record<string, Course> = {
   [scheduling.id]: scheduling,
   [security.id]: security,
   [releases.id]: releases,
+  [diagnosis.id]: diagnosis,
 }
 
 export type { Course, Section }

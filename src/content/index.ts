@@ -4,6 +4,7 @@ import { pods } from './pods'
 import { controllers } from './controllers'
 import { configuration } from './configuration'
 import { networking } from './networking'
+import { storage } from './storage'
 import type { Course, Section } from './types'
 
 // Course registry, in syllabus order — one course per chapter of KUBERNETES-COURSE-PLAN.md.
@@ -15,6 +16,7 @@ export const COURSES: Record<string, Course> = {
   [controllers.id]: controllers,
   [configuration.id]: configuration,
   [networking.id]: networking,
+  [storage.id]: storage,
 }
 
 export type { Course, Section }
